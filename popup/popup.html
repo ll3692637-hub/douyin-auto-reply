@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>抖音自动回复</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  width: 320px;
+  min-height: 400px;
+  font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 13px;
+  background: #fff;
+  color: #1a1a1a;
+}
+.header {
+  background: #FE2C55;
+  padding: 14px 16px 12px;
+  color: white;
+}
+.header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.logo-icon {
+  width: 24px;
+  height: 24px;
+  background: rgba(255,255,255,0.25);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+.logo-text {
+  font-size: 14px;
+  font-weight: 600;
+}
+.master-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.master-toggle span {
+  font-size: 12px;
+  opacity: 0.9;
+}
+.toggle {
+  position: relative;
+  width: 36px;
+  height: 20px;
+}
+.toggle input { opacity: 0; width: 0; height: 0; }
+.slider {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(255,255,255,0.3);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: .2s;
+}
+.slider:before {
+  content: "";
+  position: absolute;
+  width: 16px; height: 16px;
+  left: 2px; top: 2px;
+  background: white;
+  border-radius: 50%;
+  transition: .2s;
+}
+input:checked + .slider { background: rgba(255,255,255,0.6); }
+input:checked + .slider:before { transform: translateX(16px); }
+
+.stats-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+}
+.stat {
+  background: rgba(255,255,255,0.15);
+  border-radius: 6px;
+  padding: 6px 8px;
+  text-align: center;
+}
+.stat-num { font-size: 18px; font-weight: 600; }
+.stat-label { font-size: 10px; opacity: 0.85; margin-top: 1px; }
+
+.status-bar {
+  padding: 8px 16px;
+  background: #FFF5F6;
+  border-bottom: 1px solid #FFE0E5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #666;
+}
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ccc;
+  flex-shrink: 0;
+}
+.status-dot.live { background: #4CAF50; animation: pulse 2s infinite; }
+.status-dot.disabled { background: #aaa; }
+@keyframes pulse {
+  0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; }
+}
+
+.section {
+  padding: 10px 16px;
+  border-bottom: 1px solid #f0f0f0;
+}
+.section-title {
+  font-size: 11px;
+  color: #888;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.rule-list { display: flex; flex-direction: column; gap: 6px; }
+.rule-item {
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rule-item.disabled { opacity: 0.5; }
+.rule-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.rule-dot.on { background: #4CAF50; }
+.rule-dot.off { background: #ccc; }
+.rule-info { flex: 1; min-width: 0; }
+.rule-name { font-size: 13px; font-weight: 500; color: #1a1a1a; }
+.rule-kw { font-size: 11px; color: #888; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rule-toggle { cursor: pointer; font-size: 11px; color: #FE2C55; padding: 2px 6px; border: 1px solid #FFD0D8; border-radius: 4px; flex-shrink: 0; }
+
+.history-list {
+  max-height: 180px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.history-item {
+  background: #f8f8f8;
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+.history-danmaku {
+  font-size: 12px;
+  color: #333;
+  margin-bottom: 3px;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.history-user { color: #FE2C55; font-weight: 500; }
+.history-reply {
+  font-size: 11px;
+  color: #888;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.history-reply-text { color: #4CAF50; }
+.history-time { font-size: 10px; color: #bbb; margin-left: auto; flex-shrink: 0; }
+.empty-tip { text-align: center; color: #bbb; font-size: 12px; padding: 20px 0; }
+
+.footer {
+  padding: 10px 16px;
+  display: flex;
+  gap: 8px;
+}
+.btn {
+  flex: 1;
+  padding: 7px 0;
+  border-radius: 7px;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  transition: opacity .15s;
+}
+.btn:hover { opacity: 0.85; }
+.btn-primary { background: #FE2C55; color: white; }
+.btn-ghost { background: #f5f5f5; color: #333; border: 1px solid #e0e0e0; }
+
+#noPageTip {
+  padding: 24px 16px;
+  text-align: center;
+}
+#noPageTip .icon { font-size: 36px; margin-bottom: 10px; }
+#noPageTip .tip { font-size: 13px; color: #666; line-height: 1.6; }
+#noPageTip .go-btn {
+  display: inline-block;
+  margin-top: 12px;
+  padding: 7px 20px;
+  background: #FE2C55;
+  color: white;
+  border-radius: 7px;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+}
+</style>
+</head>
+<body>
+
+<div id="mainContent" style="display:none">
+  <div class="header">
+    <div class="header-top">
+      <div class="logo">
+        <div class="logo-icon">D</div>
+        <span class="logo-text">直播自动回复</span>
+      </div>
+      <div class="master-toggle">
+        <span id="toggleLabel">开启中</span>
+        <label class="toggle">
+          <input type="checkbox" id="masterToggle" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+    </div>
+    <div class="stats-row">
+      <div class="stat">
+        <div class="stat-num" id="statTotal">0</div>
+        <div class="stat-label">弹幕数</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num" id="statMatched">0</div>
+        <div class="stat-label">已匹配</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num" id="statReplied">0</div>
+        <div class="stat-label">已回复</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="status-bar">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">检测直播页面中...</span>
+    <span id="platformBadge" style="margin-left:auto;font-size:10px;padding:1px 6px;border-radius:4px;color:#fff;background:#888;">--</span>
+  </div>
+
+  <div class="section">
+    <div class="section-title">回复规则</div>
+    <div class="rule-list" id="ruleList"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">最近回复记录</div>
+    <div class="history-list" id="historyList"></div>
+  </div>
+
+  <div class="footer">
+    <button class="btn btn-ghost" id="btnResetStats">清零统计</button>
+    <button class="btn btn-primary" id="btnOptions">管理规则 ↗</button>
+  </div>
+</div>
+
+<div id="noPageTip" style="display:none">
+  <div class="icon">🎬</div>
+  <div class="tip">请打开抖音直播间或视频号助手<br>扩展将在直播页面自动激活</div>
+</div>
+
+<script src="popup.js"></script>
+</body>
+</html>

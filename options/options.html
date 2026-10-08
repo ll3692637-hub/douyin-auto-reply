@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>抖音直播自动回复 - 管理中心</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --brand: #FE2C55;
+  --brand-light: #FFF0F3;
+  --green: #4CAF50;
+  --border: #EBEBEB;
+  --bg: #F7F8FA;
+  --text: #1a1a1a;
+  --text-muted: #888;
+  --radius: 10px;
+}
+body {
+  font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+.layout { display: flex; height: 100vh; }
+.sidebar {
+  width: 200px;
+  background: white;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+.sidebar-logo {
+  padding: 20px 18px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.sidebar-logo .brand {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--brand);
+  margin-bottom: 2px;
+}
+.sidebar-logo .sub {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.nav { padding: 10px 8px; flex: 1; }
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #444;
+  transition: background .15s;
+  margin-bottom: 2px;
+}
+.nav-item:hover { background: #f5f5f5; }
+.nav-item.active { background: var(--brand-light); color: var(--brand); font-weight: 500; }
+.nav-icon { font-size: 16px; width: 20px; text-align: center; }
+
+.content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 28px;
+  min-width: 0;
+}
+.page { display: none; }
+.page.active { display: block; }
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+.page-title { font-size: 20px; font-weight: 600; }
+.page-sub { font-size: 13px; color: var(--text-muted); margin-top: 2px; }
+
+.card {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+}
+.card-header {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.card-title { font-size: 14px; font-weight: 500; }
+.card-body { padding: 18px; }
+
+/* 按钮 */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: opacity .15s;
+}
+.btn:hover { opacity: 0.85; }
+.btn-primary { background: var(--brand); color: white; }
+.btn-ghost { background: white; color: #333; border: 1px solid var(--border); }
+.btn-danger { background: #FFF0F0; color: #E53935; border: 1px solid #FFCDD2; }
+.btn-sm { padding: 5px 10px; font-size: 12px; border-radius: 6px; }
+.btn-icon { padding: 6px; border-radius: 6px; }
+
+/* 表单 */
+.form-group { margin-bottom: 14px; }
+.form-group label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 5px; font-weight: 500; }
+.form-group input, .form-group textarea, .form-group select {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  background: white;
+  color: var(--text);
+  outline: none;
+  transition: border-color .15s;
+}
+.form-group input:focus, .form-group textarea:focus, .form-group select:focus {
+  border-color: var(--brand);
+}
+.form-group textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
+.form-hint { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+
+/* 规则列表 */
+.rule-table { width: 100%; border-collapse: collapse; }
+.rule-table th {
+  text-align: left;
+  padding: 10px 14px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+  background: #FAFAFA;
+}
+.rule-table th:first-child { border-radius: 8px 0 0 0; }
+.rule-table th:last-child { border-radius: 0 8px 0 0; }
+.rule-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.rule-table tr:last-child td { border-bottom: none; }
+.rule-table tr:hover td { background: #FAFAFA; }
+
+.kw-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.kw-chip {
+  display: inline-block;
+  background: #F0EDFF;
+  color: #5843BE;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+}
+.reply-preview { font-size: 12px; color: var(--text-muted); max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 切换开关 */
+.toggle {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  flex-shrink: 0;
+}
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle .slider {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: #D0D0D0;
+  border-radius: 11px;
+  cursor: pointer;
+  transition: .2s;
+}
+.toggle .slider:before {
+  content: "";
+  position: absolute;
+  width: 18px; height: 18px;
+  left: 2px; top: 2px;
+  background: white;
+  border-radius: 50%;
+  transition: .2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+}
+.toggle input:checked + .slider { background: var(--green); }
+.toggle input:checked + .slider:before { transform: translateX(16px); }
+
+/* 模态框 */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 1000;
+  align-items: center;
+  justify-content: center;
+}
+.modal-overlay.show { display: flex; }
+.modal {
+  background: white;
+  border-radius: 14px;
+  width: 540px;
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: 0;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+}
+.modal-header {
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.modal-title { font-size: 16px; font-weight: 600; }
+.modal-close { cursor: pointer; font-size: 20px; color: #999; line-height: 1; }
+.modal-body { padding: 20px 22px; }
+.modal-footer {
+  padding: 14px 22px 18px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+}
+
+/* 回复列表 */
+.reply-items { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.reply-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #F8F8F8;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.reply-item .reply-text { flex: 1; font-size: 13px; }
+.reply-item .del-reply { cursor: pointer; color: #E53935; font-size: 18px; line-height: 1; }
+
+/* 历史记录 */
+.history-table { width: 100%; border-collapse: collapse; }
+.history-table th {
+  text-align: left;
+  padding: 10px 14px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+  background: #FAFAFA;
+}
+.history-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  vertical-align: middle;
+}
+.history-table tr:last-child td { border-bottom: none; }
+.user-badge {
+  display: inline-block;
+  background: #FFF0F3;
+  color: var(--brand);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+}
+.kw-badge {
+  display: inline-block;
+  background: #E8F5E9;
+  color: #2E7D32;
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-size: 11px;
+}
+
+/* 统计卡片 */
+.stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 20px; }
+.stat-card {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+}
+.stat-card .num { font-size: 28px; font-weight: 600; color: var(--brand); margin-bottom: 4px; }
+.stat-card .lbl { font-size: 12px; color: var(--text-muted); }
+
+/* 设置 */
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.settings-row:last-child { border-bottom: none; }
+.settings-label { font-size: 14px; }
+.settings-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.range-row { display: flex; align-items: center; gap: 10px; }
+.range-row input[type=range] { flex: 1; accent-color: var(--brand); }
+.range-val { font-size: 12px; color: var(--text-muted); width: 40px; text-align: right; }
+
+/* 搜索 */
+.search-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 14px;
+}
+.search-bar input {
+  flex: 1;
+  border: none;
+  outline: none;
+  font-size: 13px;
+}
+
+/* 分页 */
+.pagination { display: flex; gap: 4px; align-items: center; justify-content: center; padding: 14px 0 0; }
+.page-btn {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  background: white;
+}
+.page-btn.active { background: var(--brand); color: white; border-color: var(--brand); }
+.page-btn:hover:not(.active) { background: #f5f5f5; }
+
+/* 通知提示 */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: #323232;
+  color: white;
+  padding: 10px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  z-index: 9999;
+  opacity: 0;
+  transition: opacity .3s;
+  pointer-events: none;
+}
+.toast.show { opacity: 1; }
+
+/* 导出 */
+.export-row { display: flex; gap: 10px; }
+</style>
+</head>
+<body>
+<div class="layout">
+  <!-- 侧边栏 -->
+  <div class="sidebar">
+    <div class="sidebar-logo">
+      <div class="brand">抖音自动回复</div>
+      <div class="sub">直播公屏管理助手</div>
+    </div>
+    <nav class="nav">
+      <div class="nav-item active" data-page="rules">
+        <span class="nav-icon">📋</span>回复规则
+      </div>
+      <div class="nav-item" data-page="hosts">
+        <span class="nav-icon">👤</span>主播管理
+      </div>
+      <div class="nav-item" data-page="history">
+        <span class="nav-icon">📜</span>回复历史
+      </div>
+      <div class="nav-item" data-page="danmaku">
+        <span class="nav-icon">💬</span>留言记录
+      </div>
+      <div class="nav-item" data-page="stats">
+        <span class="nav-icon">📊</span>数据统计
+      </div>
+      <div class="nav-item" data-page="settings">
+        <span class="nav-icon">⚙️</span>全局设置
+      </div>
+      <div class="nav-item" data-page="help">
+        <span class="nav-icon">❓</span>使用说明
+      </div>
+    </nav>
+  </div>
+
+  <!-- 主内容区 -->
+  <div class="content">
+
+    <!-- 规则管理 -->
+    <div class="page active" id="page-rules">
+      <div class="page-header">
+        <div>
+          <div class="page-title">回复规则</div>
+          <div class="page-sub">配置关键词触发和自动回复内容</div>
+        </div>
+        <button class="btn btn-primary" id="btnAddRule">＋ 新增规则</button>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">规则列表</span>
+          <span id="ruleCount" style="font-size:12px;color:var(--text-muted)"></span>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="rule-table" id="ruleTable">
+            <thead>
+              <tr>
+                <th style="width:44px">状态</th>
+                <th>规则名称</th>
+                <th>触发关键词</th>
+                <th>回复内容</th>
+                <th style="width:80px">匹配方式</th>
+                <th style="width:120px">操作</th>
+              </tr>
+            </thead>
+            <tbody id="ruleTableBody">
+              <tr><td colspan="6" style="text-align:center;padding:30px;color:#bbb">加载中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">快速导入模板</span></div>
+        <div class="card-body">
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px" id="templateList">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 主播管理 -->
+    <div class="page" id="page-hosts">
+      <div class="page-header">
+        <div>
+          <div class="page-title">主播管理</div>
+          <div class="page-sub">管理直播间不同主播和他们的回复规则（最多4个）</div>
+        </div>
+        <button class="btn btn-primary" id="btnAddHost">＋ 添加主播</button>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">主播列表</span>
+          <span id="hostCount" style="font-size:12px;color:var(--text-muted)"></span>
+        </div>
+        <div class="card-body" id="hostListBody">
+          <div style="text-align:center;color:#bbb;padding:20px">加载中...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 留言记录 -->
+    <div class="page" id="page-danmaku">
+      <div class="page-header">
+        <div>
+          <div class="page-title">留言记录</div>
+          <div class="page-sub">记录所有公屏弹幕留言，支持搜索和导出分析</div>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <input type="text" id="danmakuSearch" placeholder="搜索留言..." style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;width:200px;">
+          <button class="btn btn-primary" id="btnExportDanmakuCSV">导出CSV</button>
+          <button class="btn btn-ghost" id="btnExportDanmakuJSON">导出JSON</button>
+          <button class="btn btn-danger" id="btnClearDanmaku" style="font-size:12px;">清空</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title" id="danmakuTitle">留言列表</span>
+          <span id="danmakuCount" style="font-size:12px;color:var(--text-muted)"></span>
+        </div>
+        <div class="card-body" id="danmakuListBody" style="max-height:500px;overflow-y:auto;">
+          <div style="text-align:center;color:#bbb;padding:20px">加载中...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 回复历史 -->
+    <div class="page" id="page-history">
+      <div class="page-header">
+        <div>
+          <div class="page-title">回复历史</div>
+          <div class="page-sub">查看所有自动回复记录</div>
+        </div>
+        <div class="export-row">
+          <button class="btn btn-ghost btn-sm" id="btnExportHistory">导出 CSV</button>
+          <button class="btn btn-danger btn-sm" id="btnClearHistory">清空记录</button>
+        </div>
+      </div>
+
+      <div class="search-bar">
+        <span style="color:#bbb">🔍</span>
+        <input type="text" id="historySearch" placeholder="搜索用户名、弹幕内容、关键词..." />
+      </div>
+
+      <div class="card">
+        <div style="overflow-x:auto">
+          <table class="history-table">
+            <thead>
+              <tr>
+                <th style="width:80px">时间</th>
+                <th style="width:100px">用户</th>
+                <th>弹幕内容</th>
+                <th style="width:90px">触发关键词</th>
+                <th>自动回复</th>
+                <th style="width:80px">规则名称</th>
+              </tr>
+            </thead>
+            <tbody id="historyTableBody">
+              <tr><td colspan="6" style="text-align:center;padding:30px;color:#bbb">加载中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="pagination" id="historyPagination"></div>
+      </div>
+    </div>
+
+    <!-- 数据统计 -->
+    <div class="page" id="page-stats">
+      <div class="page-header">
+        <div>
+          <div class="page-title">数据统计</div>
+          <div class="page-sub">查看自动回复运行数据</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="btnResetStatsOptions">重置统计</button>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="num" id="s-total">0</div>
+          <div class="lbl">累计弹幕数</div>
+        </div>
+        <div class="stat-card">
+          <div class="num" id="s-matched" style="color:#5843BE">0</div>
+          <div class="lbl">成功匹配数</div>
+        </div>
+        <div class="stat-card">
+          <div class="num" id="s-replied" style="color:#4CAF50">0</div>
+          <div class="lbl">已回复数</div>
+        </div>
+        <div class="stat-card">
+          <div class="num" id="s-rate" style="color:#FF9800">0%</div>
+          <div class="lbl">回复率</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">各规则触发次数</span></div>
+        <div class="card-body" id="ruleStatsBody">
+          <div style="text-align:center;color:#bbb;padding:20px">加载中...</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">高频弹幕词云（Top 20）</span></div>
+        <div class="card-body" id="wordCloud"></div>
+      </div>
+    </div>
+
+    <!-- 全局设置 -->
+    <div class="page" id="page-settings">
+      <div class="page-header">
+        <div>
+          <div class="page-title">全局设置</div>
+          <div class="page-sub">配置自动回复行为参数</div>
+        </div>
+        <button class="btn btn-primary" id="btnSaveSettings">保存设置</button>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">回复行为</span></div>
+        <div class="card-body">
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">自动回复</div>
+              <div class="settings-sub">全局开关，关闭后不进行任何自动回复</div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="set-enabled"><span class="slider"></span></label>
+          </div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">@用户名回复</div>
+              <div class="settings-sub">回复时自动 @提问用户，对方会收到被提及通知</div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="set-atMention"><span class="slider"></span></label>
+          </div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">回复延迟（最小值）</div>
+              <div class="settings-sub">最小延迟时间，模拟真人打字感</div>
+            </div>
+            <div class="range-row" style="width:180px">
+              <input type="range" id="set-delay-min" min="0" max="3000" step="100">
+              <span class="range-val" id="set-delay-min-val">500ms</span>
+            </div>
+          </div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">回复延迟（最大值）</div>
+              <div class="settings-sub">最大延迟时间</div>
+            </div>
+            <div class="range-row" style="width:180px">
+              <input type="range" id="set-delay-max" min="0" max="5000" step="100">
+              <span class="range-val" id="set-delay-max-val">2000ms</span>
+            </div>
+          </div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">防重复窗口</div>
+              <div class="settings-sub">同一用户触发同一规则后，多少秒内不再回复</div>
+            </div>
+            <div class="range-row" style="width:180px">
+              <input type="range" id="set-dedup" min="10" max="300" step="10">
+              <span class="range-val" id="set-dedup-val">60s</span>
+            </div>
+          </div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">相似评论冷却</div>
+              <div class="settings-sub">不同用户发相似评论（同一关键词）时，多少秒内只回复第一条</div>
+            </div>
+            <div class="range-row" style="width:180px">
+              <input type="range" id="set-contentdedup" min="5" max="120" step="5">
+              <span class="range-val" id="set-contentdedup-val">30s</span>
+            </div>
+          </div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">每分钟最大回复条数</div>
+              <div class="settings-sub">防止刷屏，超过限制后暂停回复</div>
+            </div>
+            <div class="range-row" style="width:180px">
+              <input type="range" id="set-maxrpm" min="1" max="30" step="1">
+              <span class="range-val" id="set-maxrpm-val">10条</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">记录与通知</span></div>
+        <div class="card-body">
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">保存回复历史</div>
+              <div class="settings-sub">将每条回复记录保存以供查看</div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="set-log"><span class="slider"></span></label>
+          </div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">历史记录上限</div>
+              <div class="settings-sub">最多保存多少条历史记录</div>
+            </div>
+            <div class="range-row" style="width:180px">
+              <input type="range" id="set-historylimit" min="100" max="2000" step="100">
+              <span class="range-val" id="set-historylimit-val">500条</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">数据管理</span></div>
+        <div class="card-body">
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <button class="btn btn-ghost" id="btnExportRules">导出规则 JSON</button>
+            <button class="btn btn-ghost" id="btnImportRules">导入规则 JSON</button>
+            <input type="file" id="importFile" accept=".json" style="display:none">
+            <button class="btn btn-danger" id="btnClearAll">清除所有数据</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 使用说明 -->
+    <div class="page" id="page-help">
+      <div class="page-header">
+        <div>
+          <div class="page-title">使用说明</div>
+          <div class="page-sub">了解如何使用抖音直播自动回复助手</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">快速开始</span></div>
+        <div class="card-body" style="line-height:2;color:#444;font-size:13px">
+          <p><strong>第一步：</strong>打开 Chrome/Edge 浏览器，进入抖音直播间 <code style="background:#f5f5f5;padding:1px 6px;border-radius:4px">live.douyin.com</code></p>
+          <p><strong>第二步：</strong>等待页面完全加载，直播间右下角会出现绿色「自动回复开启」提示</p>
+          <p><strong>第三步：</strong>点击工具栏的扩展图标，可以看到实时统计和快捷开关</p>
+          <p><strong>第四步：</strong>在本页面（管理中心）配置你的关键词和回复内容</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">规则配置说明</span></div>
+        <div class="card-body" style="line-height:2;color:#444;font-size:13px">
+          <p><strong>关键词：</strong>支持配置多个，任意一个匹配即触发。逗号分隔</p>
+          <p><strong>匹配方式：</strong>
+            <code style="background:#f5f5f5;padding:1px 6px;border-radius:4px">模糊匹配</code> - 弹幕包含关键词即触发（推荐）；
+            <code style="background:#f5f5f5;padding:1px 6px;border-radius:4px">精确匹配</code> - 弹幕完全等于关键词
+          </p>
+          <p><strong>回复内容：</strong>可配置多条，支持「随机」（每次随机选一条）和「顺序」（依次发送）两种模式</p>
+          <p><strong>防重复：</strong>默认同一用户60秒内触发同一规则只回复一次，防止刷屏</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">注意事项</span></div>
+        <div class="card-body" style="line-height:2;color:#444;font-size:13px">
+          <p>⚠️ 本工具通过读取直播间页面弹幕 DOM 实现，抖音更新后可能需要等待适配</p>
+          <p>⚠️ 发送功能依赖找到输入框，部分直播间布局不同时请提交反馈</p>
+          <p>⚠️ 建议开启「回复延迟」，避免被平台识别为机器人</p>
+          <p>⚠️ 每分钟回复条数不要设置过高，建议不超过 10 条</p>
+          <p>✅ 直播间右下角可点击绿色指示灯临时开关自动回复</p>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /content -->
+</div><!-- /layout -->
+
+<!-- 新增/编辑主播 模态框 -->
+<div class="modal-overlay" id="hostModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="hostModalTitle">添加主播</div>
+      <span class="modal-close" id="closeHostModal">×</span>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>主播名称</label>
+        <input type="text" id="f-host-name" placeholder="如：服装主播、美妆主播...">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="cancelHostModal">取消</button>
+      <button class="btn btn-primary" id="saveHostModal">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新增/编辑规则 模态框 -->
+<div class="modal-overlay" id="ruleModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="modalTitle">新增规则</div>
+      <span class="modal-close" id="closeModal">×</span>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>规则名称</label>
+        <input type="text" id="f-name" placeholder="如：购买下单、价格询问...">
+      </div>
+      <div class="form-group">
+        <label>触发关键词 <span style="color:#888;font-weight:400">（多个关键词用逗号分隔）</span></label>
+        <input type="text" id="f-keywords" placeholder="如：怎么买,购买,下单,在哪买">
+        <div class="form-hint">任意一个关键词匹配即触发此规则</div>
+      </div>
+      <div class="form-group">
+        <label>匹配方式</label>
+        <select id="f-matchmode">
+          <option value="fuzzy">模糊匹配（弹幕包含关键词即触发，推荐）</option>
+          <option value="exact">精确匹配（弹幕完全等于关键词）</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>回复内容 <span style="color:#888;font-weight:400">（可添加多条，发送时按模式选择）</span></label>
+        <div class="reply-items" id="replyItems"></div>
+        <button class="btn btn-ghost btn-sm" id="addReplyBtn" style="width:100%">＋ 添加一条回复</button>
+      </div>
+      <div class="form-group">
+        <label>回复模式</label>
+        <select id="f-replymode">
+          <option value="random">随机（每次随机选一条回复）</option>
+          <option value="sequential">顺序（依次发送每条回复）</option>
+        </select>
+      </div>
+      <div class="form-group" style="display:flex;align-items:center;gap:10px">
+        <label style="margin:0">启用此规则</label>
+        <label class="toggle"><input type="checkbox" id="f-enabled" checked><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="cancelModal">取消</button>
+      <button class="btn btn-primary" id="saveModal">保存规则</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast 提示 -->
+<div class="toast" id="toast"></div>
+
+<script src="options.js"></script>
+</body>
+</html>

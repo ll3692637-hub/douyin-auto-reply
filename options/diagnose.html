@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>抖音自动回复 - 诊断工具</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, '微软雅黑', sans-serif; background: #0a0a0a; color: #e0e0e0; padding: 20px; }
+  h1 { color: #fe2c55; font-size: 20px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
+  .card { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 14px; color: #aaa; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
+  .status-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #222; }
+  .status-row:last-child { border-bottom: none; }
+  .badge { padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+  .badge.ok { background: #1a3a1a; color: #4CAF50; }
+  .badge.fail { background: #3a1a1a; color: #f44336; }
+  .badge.warn { background: #3a2a0a; color: #FF9800; }
+  .badge.info { background: #0a1a3a; color: #2196F3; }
+  #log { background: #0d0d0d; border: 1px solid #333; border-radius: 8px; padding: 12px; height: 240px; overflow-y: auto; font-family: monospace; font-size: 12px; }
+  .log-line { padding: 2px 0; border-bottom: 1px solid #1a1a1a; }
+  .log-line.error { color: #f44336; }
+  .log-line.warn { color: #FF9800; }
+  .log-line.success { color: #4CAF50; }
+  .log-line.info { color: #64b5f6; }
+  .btn { background: #fe2c55; color: #fff; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-size: 14px; margin-right: 8px; }
+  .btn:hover { background: #e0244a; }
+  .btn.secondary { background: #333; }
+  .btn.secondary:hover { background: #444; }
+  .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .stat-box { background: #111; border-radius: 8px; padding: 14px; text-align: center; }
+  .stat-num { font-size: 28px; font-weight: 700; color: #fe2c55; }
+  .stat-label { font-size: 12px; color: #888; margin-top: 4px; }
+  .test-area { display: flex; gap: 8px; margin-top: 12px; }
+  .test-input { flex: 1; background: #111; border: 1px solid #444; border-radius: 8px; padding: 8px 12px; color: #fff; font-size: 14px; }
+  .selector-list { font-family: monospace; font-size: 12px; color: #888; line-height: 1.8; }
+  .selector-list .found { color: #4CAF50; }
+  .selector-list .notfound { color: #555; }
+  .tip { background: #1a2a1a; border: 1px solid #2d4a2d; border-radius: 8px; padding: 12px; font-size: 13px; color: #8bc98b; margin-top: 8px; line-height: 1.7; }
+</style>
+</head>
+<body>
+
+<h1>🔧 抖音自动回复 · 诊断工具</h1>
+
+<div class="card">
+  <h2>📊 实时统计</h2>
+  <div class="stats-grid">
+    <div class="stat-box"><div class="stat-num" id="stat-total">0</div><div class="stat-label">总弹幕</div></div>
+    <div class="stat-box"><div class="stat-num" id="stat-matched">0</div><div class="stat-label">已匹配</div></div>
+    <div class="stat-box"><div class="stat-num" id="stat-replied">0</div><div class="stat-label">已回复</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>🔌 扩展状态检查</h2>
+  <div id="status-list">
+    <div class="status-row"><span>Service Worker</span><span class="badge info">检查中...</span></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>🧪 模拟发送弹幕（测试规则匹配）</h2>
+  <p style="font-size:13px;color:#888;margin-bottom:8px;">在下方输入测试弹幕，模拟触发规则（不会真正发送到直播间）</p>
+  <div class="test-area">
+    <input class="test-input" id="test-input" placeholder="例如：怎么买 / 价格多少 / 发货几天" />
+    <button class="btn" onclick="testDanmaku()">测试</button>
+  </div>
+  <div id="test-result" style="margin-top:10px;font-size:13px;min-height:20px;"></div>
+</div>
+
+<div class="card">
+  <h2>📋 实时日志</h2>
+  <div id="log"></div>
+  <div style="margin-top:10px;">
+    <button class="btn secondary" onclick="clearLog()">清空日志</button>
+    <button class="btn secondary" onclick="exportLog()">导出日志</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2>💡 常见问题排查</h2>
+  <div class="tip">
+    <b>❶ 扩展加载后在直播间没有绿色指示灯</b><br>
+    → 确认你打开的是 live.douyin.com 的直播间页面（不是搜索页/个人主页）<br>
+    → 打开控制台（F12），搜索 "[抖音自动回复]" 查看日志<br><br>
+    <b>❷ 有绿灯但没有自动回复</b><br>
+    → 在控制台看是否有 "收到弹幕" 的日志<br>
+    → 检查规则关键词是否和弹幕内容匹配（大小写不影响）<br>
+    → 检查该用户在防重复窗口期内是否已被回复过<br><br>
+    <b>❸ 回复发送失败</b><br>
+    → 需要你自己已登录抖音账号并有发言权限<br>
+    → 直播间输入框区域需要可见（不能被折叠）<br><br>
+    <b>❹ 重新加载扩展</b><br>
+    → chrome://extensions/ → 找到扩展 → 点击刷新按钮 → 刷新直播间页面
+  </div>
+</div>
+
+<script>
+  // 获取storage里的数据
+  function refreshStats() {
+    chrome.storage.local.get(["stats", "settings"], (data) => {
+      const stats = data.stats || {};
+      document.getElementById("stat-total").textContent = stats.total || 0;
+      document.getElementById("stat-matched").textContent = stats.matched || 0;
+      document.getElementById("stat-replied").textContent = stats.replied || 0;
+
+      // 状态检查
+      const statusList = document.getElementById("status-list");
+      statusList.innerHTML = "";
+
+      const rows = [
+        {
+          label: "Service Worker 状态",
+          value: "正常运行",
+          status: "ok"
+        },
+        {
+          label: "自动回复开关",
+          value: data.settings?.enabled ? "已开启" : "已关闭",
+          status: data.settings?.enabled ? "ok" : "warn"
+        },
+        {
+          label: "每分钟最大回复",
+          value: `${data.settings?.maxRepliesPerMinute || 10} 条`,
+          status: "info"
+        },
+        {
+          label: "防重复窗口",
+          value: `${data.settings?.dedupWindow || 60} 秒`,
+          status: "info"
+        },
+        {
+          label: "回复延迟",
+          value: `${data.settings?.replyDelay?.min || 500}ms ~ ${data.settings?.replyDelay?.max || 2000}ms`,
+          status: "info"
+        }
+      ];
+
+      rows.forEach(row => {
+        const div = document.createElement("div");
+        div.className = "status-row";
+        div.innerHTML = `<span>${row.label}</span><span class="badge ${row.status}">${row.value}</span>`;
+        statusList.appendChild(div);
+      });
+    });
+  }
+
+  // 测试弹幕匹配
+  function testDanmaku() {
+    const text = document.getElementById("test-input").value.trim();
+    if (!text) return;
+
+    chrome.storage.local.get(["rules"], (data) => {
+      const rules = (data.rules || []).filter(r => r.enabled);
+      let matched = null;
+      const lowerText = text.toLowerCase();
+
+      for (const rule of rules) {
+        for (const kw of rule.keywords) {
+          const hit = rule.matchMode === "exact"
+            ? lowerText.trim() === kw.toLowerCase().trim()
+            : lowerText.includes(kw.toLowerCase());
+          if (hit) { matched = { rule, keyword: kw }; break; }
+        }
+        if (matched) break;
+      }
+
+      const result = document.getElementById("test-result");
+      if (matched) {
+        const reply = matched.rule.replies[Math.floor(Math.random() * matched.rule.replies.length)];
+        result.innerHTML = `<span style="color:#4CAF50">✅ 匹配规则「${matched.rule.name}」，关键词「${matched.keyword}」</span><br>
+          <span style="color:#aaa">将回复：</span><span style="color:#fff">${reply}</span>`;
+        addLog(`测试匹配: "${text}" → 规则「${matched.rule.name}」→ "${reply}"`, "success");
+      } else {
+        result.innerHTML = `<span style="color:#f44336">❌ 未匹配任何规则（共 ${rules.length} 条启用规则）</span>`;
+        addLog(`测试未匹配: "${text}"`, "warn");
+      }
+    });
+  }
+
+  // 日志
+  let logLines = [];
+  function addLog(msg, type = "info") {
+    const time = new Date().toLocaleTimeString();
+    logLines.unshift({ time, msg, type });
+    if (logLines.length > 200) logLines.pop();
+    renderLog();
+  }
+  function renderLog() {
+    const el = document.getElementById("log");
+    el.innerHTML = logLines.map(l =>
+      `<div class="log-line ${l.type}">[${l.time}] ${l.msg}</div>`
+    ).join("");
+  }
+  function clearLog() { logLines = []; renderLog(); }
+  function exportLog() {
+    const text = logLines.map(l => `[${l.time}] [${l.type.toUpperCase()}] ${l.msg}`).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+    a.download = `douyin-autoreply-log-${Date.now()}.txt`;
+    a.click();
+  }
+
+  // 监听storage变化（当有新弹幕处理时更新数据）
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local") {
+      if (changes.stats) {
+        const stats = changes.stats.newValue || {};
+        document.getElementById("stat-total").textContent = stats.total || 0;
+        document.getElementById("stat-matched").textContent = stats.matched || 0;
+        document.getElementById("stat-replied").textContent = stats.replied || 0;
+        if (changes.stats.oldValue?.replied !== stats.replied) {
+          addLog(`统计更新: 总${stats.total} 匹配${stats.matched} 回复${stats.replied}`, "info");
+        }
+      }
+    }
+  });
+
+  // Enter键测试
+  document.getElementById("test-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") testDanmaku();
+  });
+
+  // 初始化
+  addLog("诊断工具已启动", "success");
+  refreshStats();
+  setInterval(refreshStats, 3000);
+</script>
+</body>
+</html>
