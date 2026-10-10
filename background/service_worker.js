@@ -72,7 +72,11 @@ async function getCachedAccounts() {
 }
 
 function parseRoomId(url) {
-  const m = String(url || "").match(/live\.douyin\.com\/(\d+)/);
+  const u = String(url || "");
+  let m = u.match(/live\.douyin\.com\/(\d+)/);
+  if (m) return m[1];
+  // 兼容推荐页跳转的长链接：?live_web_rid=xxx / ?web_rid=xxx
+  m = u.match(/[?&](?:live_web_rid|web_rid)=(\d+)/);
   return m ? m[1] : null;
 }
 
