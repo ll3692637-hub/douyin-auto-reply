@@ -255,6 +255,27 @@ input:checked + .slider:before { transform: translateX(16px); }
   </div>
 
   <div class="section">
+    <div class="section-title">监听模式（只读采集）</div>
+    <div id="listenSection" style="display:none">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <div class="status-dot" id="listenDot" style="background:#ccc"></div>
+        <span id="listenStatusText" style="font-size:12px;color:#666">未开始</span>
+      </div>
+      <div id="listenStats" style="display:none;font-size:11px;color:#888;gap:8px;margin-bottom:8px">
+        <span>弹幕: <b id="listenDanmakuCount">0</b></span> ·
+        <span>音频段: <b id="listenAudioChunks">0</b></span> ·
+        <span>时长: <b id="listenDuration">0s</b></span>
+      </div>
+      <button class="btn btn-primary" id="btnListenStart" style="width:100%;background:#2196F3">开始监听</button>
+      <button class="btn btn-danger" id="btnListenStop" style="width:100%;display:none;margin-top:6px">停止监听</button>
+      <div id="listenError" style="display:none;font-size:11px;color:#f44336;margin-top:6px"></div>
+    </div>
+    <div id="listenNoPage" style="font-size:11px;color:#bbb;text-align:center;padding:8px 0">
+      仅支持抖音直播间页面
+    </div>
+  </div>
+
+  <div class="section">
     <div class="section-title">回复规则</div>
     <div class="rule-list" id="ruleList"></div>
   </div>

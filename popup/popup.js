@@ -23,6 +23,9 @@ async function init() {
 
   await loadAll(tab.id);
 
+  // ===== 监听模式 UI 初始化 =====
+  initListenUI(isDouyin, tab.id);
+
   // 绑定事件
   document.getElementById("masterToggle").addEventListener("change", async (e) => {
     const enabled = e.target.checked;
@@ -172,6 +175,125 @@ function escHtml(str) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+// =============================================
+// 监听模式（与自动回复完全隔离）
+// =============================================
+let listenPollTimer = null;
+
+function initListenUI(isDouyin, tabId) {
+  const section = document.getElementById("listenSection");
+  const noPage = document.getElementById("listenNoPage");
+  const startBtn = document.getElementById("btnListenStart");
+  const stopBtn = document.getElementById("btnListenStop");
+
+  if (isDouyin) {
+    section.style.display = "block";
+    noPage.style.display = "none";
+  } else {
+    section.style.display = "none";
+    noPage.style.display = "block";
+    return;
+  }
+
+  startBtn.addEventListener("click", async () => {
+    startBtn.disabled = true;
+    startBtn.textContent = "启动中...";
+    document.getElementById("listenError").style.display = "none";
+    try {
+      const res = await chrome.runtime.sendMessage({ type: "LISTEN_START", tabId });
+      if (res?.ok) {
+        updateListenUI(true);
+        startPollListenStatus();
+      } else {
+        const errEl = document.getElementById("listenError");
+        errEl.textContent = res?.hint || res?.error || "启动失败";
+        errEl.style.display = "block";
+        startBtn.disabled = false;
+        startBtn.textContent = "开始监听";
+      }
+    } catch (e) {
+      const errEl = document.getElementById("listenError");
+      errEl.textContent = "通信失败: " + (e.message || "");
+      errEl.style.display = "block";
+      startBtn.disabled = false;
+      startBtn.textContent = "开始监听";
+    }
+  });
+
+  stopBtn.addEventListener("click", async () => {
+    stopBtn.disabled = true;
+    stopBtn.textContent = "停止中...";
+    try {
+      await chrome.runtime.sendMessage({ type: "LISTEN_STOP" });
+    } catch (e) {}
+    updateListenUI(false);
+    stopPollListenStatus();
+    stopBtn.disabled = false;
+    stopBtn.textContent = "停止监听";
+  });
+
+  // 检查当前状态
+  chrome.runtime.sendMessage({ type: "LISTEN_STATUS" }).then(res => {
+    if (res?.active) {
+      updateListenUI(true);
+      startPollListenStatus();
+    }
+  }).catch(() => {});
+}
+
+function updateListenUI(active) {
+  const dot = document.getElementById("listenDot");
+  const text = document.getElementById("listenStatusText");
+  const stats = document.getElementById("listenStats");
+  const startBtn = document.getElementById("btnListenStart");
+  const stopBtn = document.getElementById("btnListenStop");
+
+  if (active) {
+    dot.style.background = "#4CAF50";
+    dot.className = "status-dot live";
+    text.textContent = "监听中...";
+    text.style.color = "#4CAF50";
+    stats.style.display = "block";
+    startBtn.style.display = "none";
+    stopBtn.style.display = "block";
+  } else {
+    dot.style.background = "#ccc";
+    dot.className = "status-dot";
+    text.textContent = "未开始";
+    text.style.color = "#666";
+    stats.style.display = "none";
+    startBtn.style.display = "block";
+    startBtn.disabled = false;
+    startBtn.textContent = "开始监听";
+    stopBtn.style.display = "none";
+  }
+}
+
+function startPollListenStatus() {
+  stopPollListenStatus();
+  listenPollTimer = setInterval(async () => {
+    try {
+      const res = await chrome.runtime.sendMessage({ type: "LISTEN_STATUS" });
+      if (res) {
+        document.getElementById("listenDanmakuCount").textContent = res.danmakuCount || 0;
+        document.getElementById("listenAudioChunks").textContent = res.audioChunks || 0;
+        document.getElementById("listenDuration").textContent = Math.floor((res.duration || 0) / 1000) + "s";
+        if (!res.active) {
+          updateListenUI(false);
+          stopPollListenStatus();
+        }
+      }
+    } catch (e) {}
+  }, 2000);
+}
+
+function stopPollListenStatus() {
+  if (listenPollTimer) {
+    clearInterval(listenPollTimer);
+    listenPollTimer = null;
+  }
 }
 
 init();

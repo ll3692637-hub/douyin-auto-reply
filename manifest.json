@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "直播自动回复助手",
-  "version": "2.0.0",
-  "description": "抖音/视频号直播间公屏弹幕关键词自动回复工具，支持规则管理、智能匹配、防刷屏",
+  "version": "3.0.0",
+  "description": "抖音/视频号直播间公屏弹幕关键词自动回复工具，支持规则管理、智能匹配、防刷屏；新增监听模式（弹幕采集+主播音频转写）",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
@@ -49,10 +49,13 @@
     "storage",
     "tabs",
     "scripting",
-    "notifications"
+    "notifications",
+    "tabCapture",
+    "offscreen"
   ],
   "host_permissions": [
     "*://live.douyin.com/*",
-    "*://channels.weixin.qq.com/*"
+    "*://channels.weixin.qq.com/*",
+    "http://127.0.0.1:17842/*"
   ]
 }

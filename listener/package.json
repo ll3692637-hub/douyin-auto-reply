@@ -1,0 +1,14 @@
+{
+  "name": "live-room-listener",
+  "version": "1.0.0",
+  "description": "Mac 本地监听服务：接收直播间音频分片和弹幕，调用腾讯云 ASR 转写",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/mock_test.js"
+  },
+  "dependencies": {},
+  "engines": {
+    "node": ">=18"
+  }
+}

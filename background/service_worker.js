@@ -7,6 +7,34 @@ const dedupCache = new Map();       // 用户级去重: userId_ruleId
 const contentDedupCache = new Map(); // 内容级去重: ruleId_keyword
 const rateWindow = { count: 0, windowStart: Date.now() };
 
+// =============================================
+// 监听模式状态（与自动回复完全隔离）
+// =============================================
+const LISTEN_LOCAL_SERVER = "http://127.0.0.1:17842";
+let listenState = {
+  active: false,
+  sessionId: null,
+  tabId: null,
+  startTime: 0,
+  danmakuCount: 0,
+  audioChunks: 0,
+  lastError: null
+};
+let listenStateHydrated = false;
+
+async function ensureListenState() {
+  if (listenStateHydrated) return;
+  const saved = await chrome.storage.session.get("listenState");
+  if (saved.listenState && typeof saved.listenState === "object") {
+    listenState = { ...listenState, ...saved.listenState };
+  }
+  listenStateHydrated = true;
+}
+
+function persistListenState() {
+  return chrome.storage.session.set({ listenState }).catch(() => {});
+}
+
 const DEFAULT_RULES = [
   { id: "rule_1", name: "购买下单", enabled: true, keywords: ["怎么买", "购买", "下单", "在哪买", "链接", "小黄车"], matchMode: "fuzzy", replies: ["亲，直接点左下角小黄车就可以下单哦~", "左下角购物车一键下单，支持全国包邮！"], replyMode: "random", createdAt: Date.now() },
   { id: "rule_2", name: "价格询问", enabled: true, keywords: ["价格", "多少钱", "价钱", "报价", "啥价", "什么价"], matchMode: "fuzzy", replies: ["亲，价格在左下角购物车里有显示，今天直播间有专属优惠哦！", "直播间专享价，比日常便宜很多，点左下角小黄车看看~"], replyMode: "random", createdAt: Date.now() },
@@ -103,9 +131,52 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     resetStats().then(sendResponse).catch(() => sendResponse({ ok: false }));
     return true;
   }
+  // ===== 监听模式（与自动回复完全隔离）=====
+  if (message.type === "LISTEN_START") {
+    startListening(message.tabId)
+      .then(r => { try { sendResponse(r); } catch(e){} })
+      .catch(e => { try { sendResponse({ ok: false, error: safeErr(e) }); } catch(_){} });
+    return true;
+  }
+  if (message.type === "LISTEN_STOP") {
+    stopListening()
+      .then(r => { try { sendResponse(r); } catch(e){} })
+      .catch(e => { try { sendResponse({ ok: false, error: safeErr(e) }); } catch(_){} });
+    return true;
+  }
+  if (message.type === "LISTEN_STATUS") {
+    ensureListenState().then(() => sendResponse({
+      active: listenState.active,
+      sessionId: listenState.sessionId,
+      danmakuCount: listenState.danmakuCount,
+      audioChunks: listenState.audioChunks,
+      duration: listenState.active ? Date.now() - listenState.startTime : 0,
+      lastError: listenState.lastError
+    })).catch(() => sendResponse({ active: false }));
+    return true;
+  }
+  if (message.type === "OFFSCREEN_CHUNK_SENT") {
+    ensureListenState().then(() => {
+      if (listenState.active && message.sessionId === listenState.sessionId) {
+        listenState.audioChunks = message.sequence;
+        return persistListenState();
+      }
+    });
+    return false;
+  }
+  if (message.type === "OFFSCREEN_CAPTURE_ERROR") {
+    ensureListenState().then(() => {
+      if (listenState.active && message.sessionId === listenState.sessionId) {
+        listenState.lastError = safeErr(message.error || "audio capture failed");
+        return persistListenState();
+      }
+    });
+    return false;
+  }
 });
 
 async function handleDanmaku(danmaku, tabId) {
+  await ensureListenState();
   // ★ 第二道防线：过滤无效弹幕
   // - 纯掩码用户名（如"康*****"、"相*****"）
   // - 空内容或仅冒号
@@ -119,6 +190,15 @@ async function handleDanmaku(danmaku, tabId) {
   }
   if (rawText.includes("DOM扫描就绪") || rawText.includes("自动回复已启动")) {
     return { replied: false, reason: "internal_msg" };
+  }
+
+  // ★ 监听模式：转发弹幕到本地服务，完全跳过自动回复管线
+  // 不匹配规则、不下发 DO_REPLY、不增加自动回复统计
+  if (listenState.active) {
+    forwardDanmakuToListenServer(danmaku).catch(e => {
+      console.warn("[Listen] 弹幕转发失败:", safeErr(e));
+    });
+    return { replied: false, reason: "listen_mode" };
   }
 
   const { profiles, settings, stats } = await chrome.storage.local.get(["profiles", "settings", "stats"]);
@@ -270,6 +350,214 @@ async function resetStats() {
   await chrome.storage.local.set({ stats: { total: 0, matched: 0, replied: 0, startTime: Date.now() } });
   return { ok: true };
 }
+
+// =============================================
+// 监听模式函数（与自动回复完全隔离）
+// =============================================
+
+function safeErr(err) {
+  const msg = (err && err.message) ? err.message : String(err || "unknown");
+  return msg.replace(/(secretId|secretKey|appId|password|token)[^,\s]*/gi, "$1:***");
+}
+
+let offscreenDocCreated = false;
+
+async function hasOffscreenDocument() {
+  const contexts = await chrome.runtime.getContexts({
+    contextTypes: ["OFFSCREEN_DOCUMENT"],
+    documentUrls: [chrome.runtime.getURL("offscreen/offscreen.html")]
+  });
+  return contexts.length > 0;
+}
+
+async function ensureOffscreenDocument() {
+  if (offscreenDocCreated) return;
+  const existing = await hasOffscreenDocument();
+  if (existing) { offscreenDocCreated = true; return; }
+  await chrome.offscreen.createDocument({
+    url: "offscreen/offscreen.html",
+    reasons: ["USER_MEDIA"],
+    justification: "采集直播间标签页音频用于 ASR 转写"
+  });
+  offscreenDocCreated = true;
+  console.log("[Listen] offscreen 文档已创建");
+}
+
+async function closeOffscreenDocument() {
+  if (!offscreenDocCreated) return;
+  try {
+    const existing = await hasOffscreenDocument();
+    if (existing) await chrome.offscreen.closeDocument();
+  } catch (e) {
+    console.warn("[Listen] 关闭 offscreen 文档失败:", e.message);
+  }
+  offscreenDocCreated = false;
+}
+
+async function startListening(tabId) {
+  await ensureListenState();
+  if (listenState.active) {
+    return { ok: false, error: "already_listening" };
+  }
+
+  // 验证标签页是抖音直播页
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab || !tab.url || !tab.url.includes("live.douyin.com")) {
+      return { ok: false, error: "not_live_tab" };
+    }
+  } catch (e) {
+    return { ok: false, error: "tab_not_found" };
+  }
+
+  // 检查本地服务是否在线
+  try {
+    const healthResp = await fetch(`${LISTEN_LOCAL_SERVER}/health`, { method: "GET", signal: AbortSignal.timeout(3000) });
+    if (!healthResp.ok) throw new Error("server unhealthy");
+  } catch (e) {
+    listenState.lastError = "local_service_offline";
+    return { ok: false, error: "local_service_offline", hint: "请先启动本地监听服务 (cd listener && node server.js)" };
+  }
+
+  // 通知本地服务创建会话
+  const sessionId = "session_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+  try {
+    const resp = await fetch(`${LISTEN_LOCAL_SERVER}/session/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId, tabId, startTime: Date.now() })
+    });
+    if (!resp.ok) throw new Error("session start failed");
+  } catch (e) {
+    listenState.lastError = safeErr(e);
+    return { ok: false, error: "session_start_failed" };
+  }
+
+  // 获取 tab 音频 streamId
+  let streamId;
+  try {
+    streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
+    if (!streamId) throw new Error("no streamId");
+  } catch (e) {
+    await fetch(`${LISTEN_LOCAL_SERVER}/session/stop`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId })
+    }).catch(() => {});
+    return { ok: false, error: "capture_failed", hint: "无法获取标签页音频流" };
+  }
+
+  // 创建 offscreen 文档并发送采集指令
+  await ensureOffscreenDocument();
+
+  try {
+    const offResp = await chrome.runtime.sendMessage({ type: "OFFSCREEN_START_CAPTURE", streamId, sessionId, tabId });
+    if (!offResp?.ok) throw new Error(offResp?.error || "offscreen start failed");
+  } catch (e) {
+    await fetch(`${LISTEN_LOCAL_SERVER}/session/stop`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId })
+    }).catch(() => {});
+    await closeOffscreenDocument();
+    return { ok: false, error: "offscreen_start_failed", hint: safeErr(e) };
+  }
+
+  listenState = {
+    active: true,
+    sessionId,
+    tabId,
+    startTime: Date.now(),
+    danmakuCount: 0,
+    audioChunks: 0,
+    lastError: null
+  };
+  await persistListenState();
+
+  console.log("[Listen] 监听已启动, sessionId:", sessionId, "tabId:", tabId);
+  return { ok: true, sessionId };
+}
+
+async function stopListening() {
+  await ensureListenState();
+  if (!listenState.active) {
+    return { ok: true, wasActive: false };
+  }
+
+  // 停止 offscreen 采集
+  try {
+    await chrome.runtime.sendMessage({ type: "OFFSCREEN_STOP_CAPTURE" });
+  } catch (e) {
+    console.warn("[Listen] offscreen 停止失败:", safeErr(e));
+  }
+
+  // 通知本地服务结束会话
+  try {
+    await fetch(`${LISTEN_LOCAL_SERVER}/session/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: listenState.sessionId })
+    });
+  } catch (e) {
+    console.warn("[Listen] 通知服务停止失败:", safeErr(e));
+  }
+
+  // 关闭 offscreen 文档
+  await closeOffscreenDocument();
+
+  const duration = Date.now() - listenState.startTime;
+  console.log("[Listen] 监听已停止, 时长:", (duration/1000).toFixed(0) + "s, 弹幕:", listenState.danmakuCount, "音频段:", listenState.audioChunks);
+
+  listenState = {
+    active: false,
+    sessionId: null,
+    tabId: null,
+    startTime: 0,
+    danmakuCount: 0,
+    audioChunks: 0,
+    lastError: null
+  };
+  await persistListenState();
+
+  return { ok: true };
+}
+
+async function forwardDanmakuToListenServer(danmaku) {
+  await ensureListenState();
+  if (!listenState.active || !listenState.sessionId) return;
+
+  const offset = Date.now() - listenState.startTime;
+  const payload = {
+    sessionId: listenState.sessionId,
+    offsetMs: offset,
+    userName: danmaku.userName || "用户",
+    userId: danmaku.userId || "user",
+    text: danmaku.text,
+    timestamp: Date.now()
+  };
+
+  try {
+    const resp = await fetch(`${LISTEN_LOCAL_SERVER}/danmaku`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (resp.ok) {
+      listenState.danmakuCount++;
+      await persistListenState();
+    } else {
+      console.warn("[Listen] 弹幕写入失败:", resp.status);
+    }
+  } catch (e) {
+    // 本地服务可能暂时不可用，不中断监听
+    listenState.lastError = safeErr(e);
+    await persistListenState();
+  }
+}
+
+// 监听标签页关闭/导航 → 自动停止监听
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (listenState.active && listenState.tabId === tabId) {
+    console.log("[Listen] 标签页已关闭, 自动停止监听");
+    stopListening().catch(() => {});
+  }
+});
 
 chrome.runtime.onInstalled.addListener(() => { initDefaults(); console.log("[AutoReply SW] 扩展已安装/更新"); });
 initDefaults();
