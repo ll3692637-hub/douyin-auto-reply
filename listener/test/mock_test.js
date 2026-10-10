@@ -86,6 +86,19 @@ async function run() {
   result = await request("POST", "/session/start", { sessionId: sessionId3, profileId: "not-exist" });
   assert.equal(JSON.parse(result.body).profileId, "general");
 
+  // 超长关键词被跳过（不进 HotwordList，不截断）
+  const sessionId4 = "session_testprofile04";
+  const longWord = "这是一段被用户误粘进来的完整话术句子肯定超过十个汉字了";
+  result = await request("POST", "/session/start", {
+    sessionId: sessionId4, profileId: "apparel-scarf", sessionKeywords: ["正常词", longWord]
+  });
+  assert.equal(result.status, 200);
+  const header4 = Buffer.from(JSON.stringify({ sessionId: sessionId4, sequence: 1, sampleRate: 16000, audioStartMs: 0 }));
+  const prefix4 = Buffer.alloc(4); prefix4.writeUInt32LE(header4.length, 0);
+  result = await request("POST", "/audio", Buffer.concat([prefix4, header4, Buffer.alloc(3200)]));
+  assert.equal(result.status, 200);
+  assert.ok(startupLog.includes("跳过超长热词"));
+
   // 档案列表接口（不含密钥）
   result = await request("GET", "/profiles");
   assert.equal(result.status, 200);

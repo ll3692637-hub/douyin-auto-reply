@@ -183,38 +183,45 @@ function escHtml(str) {
 let listenPollTimer = null;
 
 // 识别档案下拉框：从本机服务拉取档案列表，恢复上次选择
+// 加载完成前禁用"开始监听"，防止极快点击时按 general 开播
 async function loadListenProfiles() {
   const select = document.getElementById("listenProfile");
   const keywordsInput = document.getElementById("listenKeywords");
+  const startBtn = document.getElementById("btnListenStart");
   if (!select) return;
-  let profiles = [];
+  if (startBtn) { startBtn.disabled = true; startBtn.textContent = "档案加载中..."; }
   try {
-    const resp = await fetch("http://127.0.0.1:17842/profiles");
-    if (resp.ok) {
-      const data = await resp.json();
-      profiles = (data.profiles || []).filter(p => p && p.id);
-    }
-  } catch (e) { /* 服务没跑则用默认 */ }
-  if (profiles.length === 0) {
-    profiles = [{ id: "general", name: "通用", hotwordCount: 0 }];
-  }
-  select.innerHTML = "";
-  for (const p of profiles) {
-    const opt = document.createElement("option");
-    opt.value = p.id;
-    opt.textContent = p.hotwordCount > 0 ? `${p.name}（${p.hotwordCount}热词）` : p.name;
-    select.appendChild(opt);
-  }
-  try {
-    const saved = await chrome.storage.local.get("listenProfile");
-    const lp = saved.listenProfile;
-    if (lp) {
-      if (lp.profileId && [...select.options].some(o => o.value === lp.profileId)) {
-        select.value = lp.profileId;
+    let profiles = [];
+    try {
+      const resp = await fetch("http://127.0.0.1:17842/profiles");
+      if (resp.ok) {
+        const data = await resp.json();
+        profiles = (data.profiles || []).filter(p => p && p.id);
       }
-      if (keywordsInput && lp.keywordsRaw) keywordsInput.value = lp.keywordsRaw;
+    } catch (e) { /* 服务没跑则用默认 */ }
+    if (profiles.length === 0) {
+      profiles = [{ id: "general", name: "通用", hotwordCount: 0 }];
     }
-  } catch (e) {}
+    select.innerHTML = "";
+    for (const p of profiles) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.hotwordCount > 0 ? `${p.name}（${p.hotwordCount}热词）` : p.name;
+      select.appendChild(opt);
+    }
+    try {
+      const saved = await chrome.storage.local.get("listenProfile");
+      const lp = saved.listenProfile;
+      if (lp) {
+        if (lp.profileId && [...select.options].some(o => o.value === lp.profileId)) {
+          select.value = lp.profileId;
+        }
+        if (keywordsInput && lp.keywordsRaw) keywordsInput.value = lp.keywordsRaw;
+      }
+    } catch (e) {}
+  } finally {
+    if (startBtn) { startBtn.disabled = false; startBtn.textContent = "开始监听"; }
+  }
 }
 
 function initListenUI(isDouyin, tabId) {

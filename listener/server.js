@@ -86,13 +86,26 @@ function getProfile(profileId) {
 /**
  * 拼装腾讯云 HotwordList 参数："热词|权重,热词|权重"
  * 档案热词 + 本场临时关键词（权重默认 6，可单独指定 "词|权重"）
+ * 腾讯云限制单个热词 ≤30 字符（最多 10 个汉字）；超长词跳过并告警，不截断，
+ * 避免用户误粘整段话术导致真实请求报参数错误。
  */
+function isValidHotword(term) {
+  if (term.length > 30) return false;
+  const cjkCount = (term.match(/[\u4e00-\u9fff]/g) || []).length;
+  if (cjkCount > 10) return false;
+  return true;
+}
+
 function buildHotwordList(profile, sessionKeywords) {
   const parts = [];
   const seen = new Set();
   const push = (term, weight) => {
     term = String(term || "").trim();
     if (!term || seen.has(term)) return;
+    if (!isValidHotword(term)) {
+      console.warn(`[Listener] 跳过超长热词 (${term.length}字符): "${term.slice(0, 24)}..."`);
+      return;
+    }
     seen.add(term);
     let w = Number(weight);
     // 官方合法值：1-11 或 100；非法值钳制到 6
