@@ -1,0 +1,6 @@
+{
+  "_comment": "账号名单（TASK-DANMAKU-001）。复制为 accounts.json 后填写；accounts.json 已加入 .gitignore，不提交。",
+  "anchor_uids": [],
+  "rooms": [],
+  "water_army_uids": []
+}

@@ -5,6 +5,9 @@ node_modules/
 asr-secrets.json
 secrets.json
 
+# 账号名单（用户私有配置，不提交）
+accounts.json
+
 # 会话数据（绝不提交）
 sessions/
 

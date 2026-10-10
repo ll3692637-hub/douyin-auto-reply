@@ -1,0 +1,52 @@
+{
+  "engine": "16k_zh",
+  "hotwords": [
+    {
+      "term": "上海故事",
+      "weight": 8
+    },
+    {
+      "term": "桑蚕丝",
+      "weight": 8
+    },
+    {
+      "term": "真丝拉绒",
+      "weight": 7
+    },
+    {
+      "term": "拉绒",
+      "weight": 6
+    },
+    {
+      "term": "双面",
+      "weight": 5
+    },
+    {
+      "term": "墨韵桔",
+      "weight": 6
+    },
+    {
+      "term": "落日熔金",
+      "weight": 6
+    }
+  ],
+  "id": "apparel-scarf",
+  "name": "围巾服饰",
+  "norm_terms": [
+    {
+      "aliases": [
+        "三蚕丝",
+        "桑蚕寺"
+      ],
+      "correct": "桑蚕丝"
+    },
+    {
+      "aliases": [
+        "上还故事",
+        "上海故市"
+      ],
+      "correct": "上海故事"
+    }
+  ],
+  "updatedAt": 0
+}

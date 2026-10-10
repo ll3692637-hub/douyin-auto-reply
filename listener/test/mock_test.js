@@ -70,6 +70,52 @@ async function run() {
   assert.equal(result.status, 200);
   assert.equal(JSON.parse(result.body).transcript, "模拟转写 #1");
 
+  // TASK-ASR-002: 识别档案 + 本场关键词 + 快照
+  const sessionId2 = "session_testprofile02";
+  result = await request("POST", "/session/start", {
+    sessionId: sessionId2, profileId: "apparel-scarf", sessionKeywords: ["测试词|9", "普通词"]
+  });
+  assert.equal(result.status, 200);
+  assert.equal(JSON.parse(result.body).profileId, "apparel-scarf");
+  const info2 = JSON.parse(fs.readFileSync(path.join(dataDir, "sessions", sessionId2, "session.json"), "utf8"));
+  assert.equal(info2.profileSnapshot.profileId, "apparel-scarf");
+  assert.ok(info2.profileSnapshot.sessionKeywords.includes("测试词|9"));
+
+  // 无档案时退回通用识别
+  const sessionId3 = "session_testprofile03";
+  result = await request("POST", "/session/start", { sessionId: sessionId3, profileId: "not-exist" });
+  assert.equal(JSON.parse(result.body).profileId, "general");
+
+  // 档案列表接口（不含密钥）
+  result = await request("GET", "/profiles");
+  assert.equal(result.status, 200);
+  const profiles = JSON.parse(result.body).profiles;
+  assert.ok(profiles.some(p => p.id === "apparel-scarf" && p.hotwordCount > 0));
+  assert.ok(!JSON.stringify(profiles).includes("secret"));
+
+  // 账号名单接口（测试环境无 accounts.json → 空名单，fail-open）
+  result = await request("GET", "/accounts");
+  assert.equal(result.status, 200);
+  const accounts = JSON.parse(result.body).accounts;
+  assert.deepEqual(accounts.anchor_uids, []);
+  assert.deepEqual(accounts.water_army_uids, []);
+
+  // 弹幕打标：无名单时全部按 audience
+  result = await request("POST", "/danmaku", { sessionId, offsetMs: 13, userName: "u", userId: "uid_1", text: "你好", timestamp: 457 });
+  assert.equal(result.status, 200);
+  const dmLines = fs.readFileSync(path.join(dataDir, "sessions", sessionId, "danmaku.jsonl"), "utf8").trim().split("\n");
+  assert.equal(JSON.parse(dmLines[dmLines.length - 1]).role, "audience");
+
+  // "洗一遍"单元测试：别名精确替换 + 替换记录
+  const { washText } = require("../textnorm");
+  const washed = washText("这个三蚕丝围巾是上还故事的", [
+    { correct: "桑蚕丝", aliases: ["三蚕丝"] },
+    { correct: "上海故事", aliases: ["上还故事"] }
+  ]);
+  assert.equal(washed.text, "这个桑蚕丝围巾是上海故事的");
+  assert.equal(washed.replacements.length, 2);
+  assert.equal(washText("原文无错别字", []).text, "原文无错别字");
+
   result = await request("POST", "/session/start", { sessionId: "../../bad" });
   assert.equal(result.status, 400);
 
@@ -81,11 +127,18 @@ async function run() {
 
   const sessionDir = path.join(dataDir, "sessions", sessionId);
   const info = JSON.parse(fs.readFileSync(path.join(sessionDir, "session.json"), "utf8"));
-  assert.equal(info.danmakuCount, 1); assert.equal(info.transcriptCount, 1); assert.equal(info.audioChunks, 1);
+  assert.equal(info.danmakuCount, 2); assert.equal(info.transcriptCount, 1); assert.equal(info.audioChunks, 1);
   assert.ok(info.endTime);
   assert.equal(JSON.parse(fs.readFileSync(path.join(sessionDir, "transcript.jsonl"), "utf8")).text, "模拟转写 #1");
+  // AC-ASR-07: mock 日志带 [MOCK] 标记；转写条目带 mock/status/profileId 诊断字段
+  assert.ok(startupLog.includes("[MOCK]"));
+  const tEntry = JSON.parse(fs.readFileSync(path.join(sessionDir, "transcript.jsonl"), "utf8"));
+  assert.equal(tEntry.mock, true);
+  assert.equal(tEntry.status, "ok");
+  assert.equal(tEntry.profileId, "general");
   assert.ok(!startupLog.includes("mock-secret-key"));
   console.log("✓ 本地服务真实启动、会话、弹幕、音频、转写模拟与安全边界：全部通过");
+  console.log("✓ TASK-ASR-002（识别档案/热词/快照/洗一遍/[MOCK]）与 TASK-DANMAKU-001（账号名单/弹幕打标）：全部通过");
 }
 
 run().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => {

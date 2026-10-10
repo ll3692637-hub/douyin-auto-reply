@@ -5,7 +5,9 @@
 // =============================================
 
 const LOCAL_SERVER = "http://127.0.0.1:17842";
-const CHUNK_INTERVAL_MS = 45000; // 每 45 秒提交一段 PCM
+// 分片时长配置位置（TASK-ASR-002）：改这里即可调整，单位毫秒。
+// 约 18 秒一片：时间定位更细、长句混杂更少；代价是 API 调用量约为 45 秒分片的 2.5 倍。
+const CHUNK_INTERVAL_MS = 18000;
 
 let audioCtx = null;
 let mediaStream = null;

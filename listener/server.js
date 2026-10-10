@@ -22,6 +22,12 @@ const APP_SUPPORT = process.env.LISTENER_DATA_DIR
   : path.join(os.homedir(), "Library", "Application Support", "LiveRoomListener");
 const SECRETS_PATH = path.join(APP_SUPPORT, "asr-secrets.json");
 const SESSIONS_DIR = path.join(APP_SUPPORT, "sessions");
+// 识别档案目录（随代码发布，可提交）；asr-secrets.json 等用户数据绝不提交
+const PROFILES_DIR = path.join(__dirname, "profiles");
+// 账号名单（用户私有配置，不提交；见 accounts.example.json）
+const ACCOUNTS_PATH = path.join(__dirname, "accounts.json");
+
+const { washText } = require("./textnorm");
 
 // =============================================
 // 密钥读取（仅在此处读取，不输出内容）
@@ -43,6 +49,94 @@ function loadCredentials() {
     cachedCredentials = null;
     throw new Error("ASR secrets file is unavailable or invalid");
   }
+}
+
+// =============================================
+// 识别档案（Recognition Profile）
+// 本地 JSON 配置：热词给腾讯云识别时用，norm_terms 给"洗一遍"用。
+// 不把任何品类词汇写死在代码中；无档案时退回通用识别。
+// =============================================
+
+let cachedProfiles = null;
+
+function loadProfiles() {
+  if (cachedProfiles) return cachedProfiles;
+  cachedProfiles = {};
+  try {
+    const files = fs.readdirSync(PROFILES_DIR).filter(f => f.endsWith(".json"));
+    for (const f of files) {
+      try {
+        const p = JSON.parse(fs.readFileSync(path.join(PROFILES_DIR, f), "utf-8"));
+        if (p && p.id) cachedProfiles[p.id] = p;
+      } catch (e) { /* 单个档案损坏不影响其他 */ }
+    }
+  } catch (e) { /* 目录缺失则空档案 */ }
+  // 兜底：至少保证 general 存在
+  if (!cachedProfiles.general) {
+    cachedProfiles.general = { id: "general", name: "通用", engine: "16k_zh", hotwords: [], norm_terms: [] };
+  }
+  return cachedProfiles;
+}
+
+function getProfile(profileId) {
+  const profiles = loadProfiles();
+  return profiles[profileId] || profiles.general;
+}
+
+/**
+ * 拼装腾讯云 HotwordList 参数："热词|权重,热词|权重"
+ * 档案热词 + 本场临时关键词（权重默认 6，可单独指定 "词|权重"）
+ */
+function buildHotwordList(profile, sessionKeywords) {
+  const parts = [];
+  const seen = new Set();
+  const push = (term, weight) => {
+    term = String(term || "").trim();
+    if (!term || seen.has(term)) return;
+    seen.add(term);
+    let w = Number(weight);
+    // 官方合法值：1-11 或 100；非法值钳制到 6
+    if (!(w >= 1 && w <= 11) && w !== 100) w = 6;
+    parts.push(`${term}|${w}`);
+  };
+  for (const h of (profile && profile.hotwords) || []) push(h.term, h.weight);
+  for (const k of sessionKeywords || []) {
+    if (typeof k === "string" && k.includes("|")) {
+      const [t, w] = k.split("|");
+      push(t, w);
+    } else {
+      push(k, 6);
+    }
+  }
+  return parts.slice(0, 128).join(",");
+}
+
+// =============================================
+// 账号名单（TASK-DANMAKU-001）
+// anchor_uids: 主播/场控账号；water_army_uids: 水军号；rooms: 生效直播间 roomId
+// 文件缺失 = 不启用过滤（fail-open，全部按 audience 处理）
+// =============================================
+
+function loadAccounts() {
+  try {
+    const a = JSON.parse(fs.readFileSync(ACCOUNTS_PATH, "utf-8"));
+    return {
+      anchor_uids: Array.isArray(a.anchor_uids) ? a.anchor_uids.map(String) : [],
+      water_army_uids: Array.isArray(a.water_army_uids) ? a.water_army_uids.map(String) : [],
+      rooms: Array.isArray(a.rooms) ? a.rooms.map(String) : []
+    };
+  } catch (e) {
+    return { anchor_uids: [], water_army_uids: [], rooms: [] };
+  }
+}
+
+function getDanmakuRole(userId) {
+  const uid = String(userId || "");
+  if (!uid) return "audience";
+  const acc = loadAccounts();
+  if (acc.anchor_uids.includes(uid)) return "anchor";
+  if (acc.water_army_uids.includes(uid)) return "water_army";
+  return "audience";
 }
 
 // =============================================
@@ -113,7 +207,7 @@ function tc3Sign(creds, payload) {
   };
 }
 
-function callSentenceRecognition(creds, pcmBuffer, sampleRate, seq) {
+function callSentenceRecognition(creds, pcmBuffer, sampleRate, seq, hotwordList) {
   return new Promise((resolve, reject) => {
     const audioBase64 = pcmBuffer.toString("base64");
     if (sampleRate !== 16000) {
@@ -128,6 +222,8 @@ function callSentenceRecognition(creds, pcmBuffer, sampleRate, seq) {
       Data: audioBase64,
       DataLen: pcmBuffer.length
     };
+    // 临时热词表（识别档案 + 本场关键词）；无热词时不传该参数
+    if (hotwordList) params.HotwordList = hotwordList;
     const payload = JSON.stringify(params);
 
     const sign = tc3Sign(creds, payload);
@@ -187,12 +283,20 @@ function callSentenceRecognition(creds, pcmBuffer, sampleRate, seq) {
   });
 }
 
-function transcribeAudio(pcmBuffer, sampleRate, seq) {
+function transcribeAudio(pcmBuffer, sampleRate, seq, ctx) {
+  ctx = ctx || {};
   // 仅供自动化测试使用：测试进程显式开启，绝不会请求腾讯云或读取用户密钥。
+  // [MOCK] 标记：日志与返回中明确标识，避免与真实转写混淆。
   if (process.env.LISTENER_TEST_MODE === "1") {
-    return Promise.resolve({ text: "模拟转写 #" + seq, requestId: "mock-request-" + seq, audioDuration: 1 });
+    return Promise.resolve({
+      text: "模拟转写 #" + seq,
+      requestId: "mock-request-" + seq,
+      audioDuration: 1,
+      mock: true,
+      hotwordList: ctx.hotwordList || ""
+    });
   }
-  return callSentenceRecognition(loadCredentials(), pcmBuffer, sampleRate, seq);
+  return callSentenceRecognition(loadCredentials(), pcmBuffer, sampleRate, seq, ctx.hotwordList);
 }
 
 // =============================================
@@ -216,6 +320,12 @@ function createSession(sessionId, meta) {
   const sessionDir = path.join(SESSIONS_DIR, sessionId);
   fs.mkdirSync(sessionDir, { recursive: true });
 
+  // 识别档案快照：本场实际使用的档案 ID + 版本 + 本场临时关键词
+  // 快照写入 session.json，事后可追溯；原始档案文件后续修改不影响已存快照
+  const profile = getProfile(meta.profileId);
+  const sessionKeywords = Array.isArray(meta.sessionKeywords)
+    ? meta.sessionKeywords.map(String).slice(0, 64) : [];
+
   const sessionInfo = {
     sessionId,
     startTime: meta.startTime || Date.now(),
@@ -223,7 +333,14 @@ function createSession(sessionId, meta) {
     tabId: meta.tabId || null,
     danmakuCount: 0,
     transcriptCount: 0,
-    audioChunks: 0
+    audioChunks: 0,
+    profileSnapshot: {
+      profileId: profile.id,
+      profileName: profile.name,
+      engine: profile.engine,
+      hotwordCount: (profile.hotwords || []).length,
+      sessionKeywords
+    }
   };
 
   fs.writeFileSync(path.join(sessionDir, "session.json"), JSON.stringify(sessionInfo, null, 2));
@@ -252,7 +369,9 @@ function getSession(sessionId) {
 function appendDanmaku(sessionId, danmaku) {
   const session = getSession(sessionId);
   if (!session) return;
-  const line = JSON.stringify(danmaku) + "\n";
+  // TASK-DANMAKU-001：server 端打标（供复盘分析用）；
+  // 自动回复的跳过判定在浏览器 Service Worker 内做（见 service_worker.js）。
+  const line = JSON.stringify({ ...danmaku, role: getDanmakuRole(danmaku.userId) }) + "\n";
   fs.appendFileSync(path.join(session.dir, "danmaku.jsonl"), line);
   session.info.danmakuCount++;
   persistSession(session);
@@ -312,13 +431,39 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, { ok: true, asrReady, port: PORT, host: HOST });
   }
 
+  // GET /accounts - 账号名单（TASK-DANMAKU-001）
+  // 供浏览器 Service Worker 同步，在发送前跳过主播号/水军号。
+  // 仅本机 + 扩展来源可调用（走统一 Origin 校验）。
+  if (req.method === "GET" && req.url === "/accounts") {
+    return sendJson(res, 200, { ok: true, accounts: loadAccounts() });
+  }
+
+  // GET /profiles - 识别档案列表（调试/核对用，不含密钥）
+  if (req.method === "GET" && req.url === "/profiles") {
+    const profiles = loadProfiles();
+    const list = Object.values(profiles).map(p => ({
+      id: p.id, name: p.name, engine: p.engine,
+      hotwordCount: (p.hotwords || []).length
+    }));
+    return sendJson(res, 200, { ok: true, profiles: list });
+  }
+
   // POST /session/start
   if (req.method === "POST" && req.url === "/session/start") {
     try {
       const body = await readJsonBody(req);
-      const session = createSession(body.sessionId, { startTime: body.startTime, tabId: body.tabId });
-      console.log(`[Listener] 会话已创建: ${body.sessionId}`);
-      return sendJson(res, 200, { ok: true, sessionId: body.sessionId });
+      const session = createSession(body.sessionId, {
+        startTime: body.startTime,
+        tabId: body.tabId,
+        profileId: body.profileId,
+        sessionKeywords: body.sessionKeywords
+      });
+      console.log(`[Listener] 会话已创建: ${body.sessionId} (档案: ${session.info.profileSnapshot.profileId})`);
+      return sendJson(res, 200, {
+        ok: true,
+        sessionId: body.sessionId,
+        profileId: session.info.profileSnapshot.profileId
+      });
     } catch (e) {
       return sendJson(res, 400, { ok: false, error: safeError(e) });
     }
@@ -377,19 +522,34 @@ const server = http.createServer(async (req, res) => {
       const signal = summarizePcm(pcmData);
       console.log(`[Listener] 收到音频分片 #${sequence}, ${pcmData.length} bytes, 信号 RMS=${signal.rms}, 峰值=${signal.peak}, 非静音=${signal.nonSilentPercent}%, sessionId=${sessionId}`);
 
-      // 调用腾讯云 ASR
+      // 调用腾讯云 ASR（带本场识别档案热词）
       let transcript = "";
       let asrError = null;
       try {
-        const result = await transcribeAudio(pcmData, sampleRate, sequence);
-        transcript = result.text;
-        console.log(`[Listener] ASR #${sequence}: "${transcript.slice(0, 60)}..."`);
+        const sess = getSession(sessionId);
+        const snap = (sess && sess.info.profileSnapshot) || {};
+        const profile = getProfile(snap.profileId);
+        const hotwordList = buildHotwordList(profile, snap.sessionKeywords);
 
-        // 写入转写结果（带时间戳）
+        const result = await transcribeAudio(pcmData, sampleRate, sequence, { hotwordList });
+        transcript = result.text;
+        const mockTag = result.mock ? "[MOCK] " : "";
+        console.log(`[Listener] ${mockTag}ASR #${sequence}: "${transcript.slice(0, 60)}..."`);
+
+        // "洗一遍"：本地别名清洗，原始文本永远保留在 text，清洗结果存 normText
+        const washed = washText(transcript, profile.norm_terms || []);
+
+        // 写入转写结果（带时间戳与诊断状态）
+        // text = ASR 原始输出，永不覆盖；status: ok | empty | error
         appendTranscript(sessionId, {
           offsetMs: audioStartMs,
           sequence,
           text: transcript,
+          normText: washed.replacements.length ? washed.text : null,
+          normReplacements: washed.replacements,
+          status: transcript ? "ok" : "empty",
+          mock: !!result.mock,
+          profileId: profile.id,
           durationMs: result.audioDuration || (pcmData.length / (sampleRate * 2) * 1000),
           requestId: result.requestId,
           timestamp: Date.now()
@@ -405,6 +565,10 @@ const server = http.createServer(async (req, res) => {
           offsetMs: audioStartMs,
           sequence,
           text: "",
+          normText: null,
+          normReplacements: [],
+          status: "error",
+          mock: false,
           error: asrError,
           timestamp: Date.now()
         });

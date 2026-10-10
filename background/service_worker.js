@@ -35,6 +35,70 @@ function persistListenState() {
   return chrome.storage.session.set({ listenState }).catch(() => {});
 }
 
+// =============================================
+// 账号名单同步（TASK-DANMAKU-001）
+// 名单源头在本地服务的 accounts.json；Service Worker 在发送决策前必须能读到，
+// 因此启动/开播时从本机服务拉取并缓存到 chrome.storage.local。
+// 服务没跑或名单缺失 = 不启用过滤（fail-open，全部按 audience 处理，不误杀）。
+// =============================================
+
+const ACCOUNTS_CACHE_KEY = "listenerAccounts";
+const ACCOUNTS_CACHE_TTL_MS = 10 * 60 * 1000;
+
+async function syncAccountsFromServer() {
+  try {
+    const resp = await fetch(`${LISTEN_LOCAL_SERVER}/accounts`);
+    if (!resp.ok) return false;
+    const data = await resp.json();
+    const accounts = data && data.accounts ? data.accounts : { anchor_uids: [], water_army_uids: [], rooms: [] };
+    await chrome.storage.local.set({
+      [ACCOUNTS_CACHE_KEY]: { ...accounts, syncedAt: Date.now() }
+    });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function getCachedAccounts() {
+  try {
+    const saved = await chrome.storage.local.get(ACCOUNTS_CACHE_KEY);
+    const a = saved[ACCOUNTS_CACHE_KEY];
+    if (!a || !Array.isArray(a.anchor_uids)) return null;
+    return a;
+  } catch (e) {
+    return null;
+  }
+}
+
+function parseRoomId(url) {
+  const m = String(url || "").match(/live\.douyin\.com\/(\d+)/);
+  return m ? m[1] : null;
+}
+
+/**
+ * 是否应跳过这条弹幕的自动回复（主播号/水军号）。
+ * 在 handleDanmaku 的自动回复管线入口调用，规则匹配之前。
+ */
+async function shouldExcludeDanmaku(danmaku, tabId) {
+  const accounts = await getCachedAccounts();
+  if (!accounts) return false; // 无名单 = 不过滤
+  const uid = String(danmaku.userId || "");
+  if (!uid) return false;
+  const isListed = accounts.anchor_uids.includes(uid) || accounts.water_army_uids.includes(uid);
+  if (!isListed) return false;
+  // 按直播间隔离：rooms 为空 = 名单未配置生效范围，不过滤
+  if (!Array.isArray(accounts.rooms) || accounts.rooms.length === 0) return false;
+  try {
+    const tab = tabId ? await chrome.tabs.get(tabId) : null;
+    const roomId = parseRoomId(tab && tab.url);
+    if (!roomId || !accounts.rooms.map(String).includes(roomId)) return false;
+  } catch (e) {
+    return false;
+  }
+  return true;
+}
+
 const DEFAULT_RULES = [
   { id: "rule_1", name: "购买下单", enabled: true, keywords: ["怎么买", "购买", "下单", "在哪买", "链接", "小黄车"], matchMode: "fuzzy", replies: ["亲，直接点左下角小黄车就可以下单哦~", "左下角购物车一键下单，支持全国包邮！"], replyMode: "random", createdAt: Date.now() },
   { id: "rule_2", name: "价格询问", enabled: true, keywords: ["价格", "多少钱", "价钱", "报价", "啥价", "什么价"], matchMode: "fuzzy", replies: ["亲，价格在左下角购物车里有显示，今天直播间有专属优惠哦！", "直播间专享价，比日常便宜很多，点左下角小黄车看看~"], replyMode: "random", createdAt: Date.now() },
@@ -199,6 +263,12 @@ async function handleDanmaku(danmaku, tabId) {
       console.warn("[Listen] 弹幕转发失败:", safeErr(e));
     });
     return { replied: false, reason: "listen_mode" };
+  }
+
+  // ★ TASK-DANMAKU-001：主播号/水军号跳过（在 Service Worker 决策点）
+  // 名单来自本机服务 accounts.json（已同步缓存在 chrome.storage.local）
+  if (await shouldExcludeDanmaku(danmaku, tabId)) {
+    return { replied: false, reason: "excluded_account" };
   }
 
   const { profiles, settings, stats } = await chrome.storage.local.get(["profiles", "settings", "stats"]);
@@ -399,6 +469,8 @@ async function startListening(tabId) {
   if (listenState.active) {
     return { ok: false, error: "already_listening" };
   }
+  // 同步账号名单（失败不阻塞开播；无名单时不过滤）
+  syncAccountsFromServer().catch(() => {});
 
   // 验证标签页是抖音直播页
   try {
