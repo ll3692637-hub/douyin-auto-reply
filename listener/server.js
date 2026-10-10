@@ -431,9 +431,13 @@ function finalizeSession(sessionId) {
 // =============================================
 
 const server = http.createServer(async (req, res) => {
-  // 仅允许扩展页或本机脚本调用；不向任意网页开放 CORS。
+  // 仅允许扩展页、本机复盘页或本机脚本调用；不向任意网页开放 CORS。
+  // 注意：复盘页由本服务自身提供（同源），其 fetch 会带 Origin: http://127.0.0.1:PORT，
+  // 必须放行，否则页面打不开 API。
   const origin = req.headers.origin;
-  if (origin && !origin.startsWith("chrome-extension://")) {
+  const selfOrigins = [`http://${HOST}:${PORT}`, `http://localhost:${PORT}`];
+  const originOk = !origin || origin.startsWith("chrome-extension://") || selfOrigins.includes(origin);
+  if (!originOk) {
     return sendJson(res, 403, { ok: false, error: "forbidden origin" });
   }
 
@@ -607,6 +611,34 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // GET / - 本机复盘页（TASK-UI-001）
+  if (req.method === "GET" && (req.url === "/" || req.url === "/review")) {
+    try {
+      const html = fs.readFileSync(path.join(__dirname, "review.html"), "utf-8");
+      return sendHtml(res, 200, html);
+    } catch (e) {
+      return sendJson(res, 500, { ok: false, error: "review page missing" });
+    }
+    return;
+  }
+
+  // GET /api/sessions - 会话列表
+  if (req.method === "GET" && req.url === "/api/sessions") {
+    return sendJson(res, 200, { ok: true, sessions: listSessions() });
+  }
+
+  // GET /api/session?id=xxx - 会话详情（转写+弹幕时间轴）
+  if (req.method === "GET" && req.url.startsWith("/api/session")) {
+    try {
+      const u = new URL(req.url, `http://${HOST}:${PORT}`);
+      const detail = getSessionDetail(u.searchParams.get("id") || "");
+      return sendJson(res, 200, { ok: true, ...detail });
+    } catch (e) {
+      return sendJson(res, 400, { ok: false, error: safeError(e) });
+    }
+    return;
+  }
+
   // 404
   return sendJson(res, 404, { error: "not found" });
 });
@@ -624,6 +656,70 @@ function safeError(error) {
 function sendJson(res, status, data) {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(data));
+}
+
+function sendHtml(res, status, html) {
+  res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
+  res.end(html);
+}
+
+// =============================================
+// 复盘数据读取（TASK-UI-001）
+// 只读 sessions 目录；绝不触碰密钥与原始音频。
+// =============================================
+
+function readJsonLines(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, "utf-8").trim();
+    if (!raw) return [];
+    return raw.split("\n").map(line => {
+      try { return JSON.parse(line); } catch (e) { return null; }
+    }).filter(Boolean);
+  } catch (e) {
+    return [];
+  }
+}
+
+function listSessions() {
+  let dirs = [];
+  try {
+    dirs = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
+      .filter(d => d.isDirectory()).map(d => d.name);
+  } catch (e) { return []; }
+  const list = [];
+  for (const name of dirs) {
+    // 目录名同样走 sessionId 白名单，防止异常目录
+    if (!/^session_[A-Za-z0-9_-]{8,96}$/.test(name)) continue;
+    try {
+      const info = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, name, "session.json"), "utf-8"));
+      list.push({
+        sessionId: info.sessionId || name,
+        startTime: info.startTime || 0,
+        endTime: info.endTime || null,
+        danmakuCount: info.danmakuCount || 0,
+        transcriptCount: info.transcriptCount || 0,
+        audioChunks: info.audioChunks || 0,
+        profileId: (info.profileSnapshot && info.profileSnapshot.profileId) || "general",
+        profileName: (info.profileSnapshot && info.profileSnapshot.profileName) || "通用"
+      });
+    } catch (e) { /* session.json 缺失则跳过 */ }
+  }
+  list.sort((a, b) => b.startTime - a.startTime);
+  return list;
+}
+
+function getSessionDetail(sessionId) {
+  assertSessionId(sessionId); // 防路径穿越
+  const dir = path.join(SESSIONS_DIR, sessionId);
+  const info = JSON.parse(fs.readFileSync(path.join(dir, "session.json"), "utf-8"));
+  const transcript = readJsonLines(path.join(dir, "transcript.jsonl"));
+  const danmaku = readJsonLines(path.join(dir, "danmaku.jsonl"));
+  // 合并时间轴：按 offsetMs 排序；缺失 offsetMs 的按 timestamp 兜底
+  const timeline = [
+    ...transcript.map(t => ({ kind: "transcript", at: t.offsetMs != null ? t.offsetMs : 0, data: t })),
+    ...danmaku.map(d => ({ kind: "danmaku", at: d.offsetMs != null ? d.offsetMs : 0, data: d }))
+  ].sort((a, b) => a.at - b.at);
+  return { info, timeline, transcriptCount: transcript.length, danmakuCount: danmaku.length };
 }
 
 function readJsonBody(req) {

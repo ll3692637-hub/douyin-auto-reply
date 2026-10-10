@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>直播复盘 - LiveRoomListener</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f5f6f8; color: #333; font-size: 14px; }
+  header { background: #1a1d23; color: #fff; padding: 14px 20px; display: flex; align-items: center; gap: 10px; }
+  header h1 { font-size: 16px; font-weight: 600; }
+  header .sub { font-size: 12px; color: #9aa0aa; }
+  .layout { display: flex; height: calc(100vh - 52px); }
+  aside { width: 300px; background: #fff; border-right: 1px solid #e5e7eb; overflow-y: auto; }
+  aside h2 { font-size: 13px; color: #666; padding: 12px 14px 6px; }
+  .sess { padding: 10px 14px; border-bottom: 1px solid #f0f0f0; cursor: pointer; }
+  .sess:hover { background: #f8fafc; }
+  .sess.active { background: #eef4ff; border-left: 3px solid #2196F3; }
+  .sess .id { font-size: 12px; color: #999; font-family: monospace; }
+  .sess .meta { font-size: 12px; color: #666; margin-top: 4px; }
+  .sess .live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #4CAF50; margin-right: 5px; }
+  main { flex: 1; overflow-y: auto; padding: 18px 22px; }
+  .card { background: #fff; border-radius: 8px; padding: 16px 18px; margin-bottom: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  .card h3 { font-size: 14px; margin-bottom: 10px; }
+  .kv { display: flex; flex-wrap: wrap; gap: 8px 24px; font-size: 13px; color: #555; }
+  .kv b { color: #222; }
+  .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-left: 6px; vertical-align: 1px; }
+  .b-mock { background: #fff3e0; color: #e65100; }
+  .b-err { background: #ffebee; color: #c62828; }
+  .b-empty { background: #f5f5f5; color: #999; }
+  .b-anchor { background: #e3f2fd; color: #1565c0; }
+  .b-water { background: #f3e5f5; color: #7b1fa2; }
+  .b-profile { background: #e8f5e9; color: #2e7d32; }
+  .tl-item { padding: 9px 0; border-bottom: 1px solid #f2f2f2; display: flex; gap: 12px; }
+  .tl-item:last-child { border-bottom: none; }
+  .t { flex: 0 0 52px; font-size: 12px; color: #999; font-family: monospace; padding-top: 2px; }
+  .tl-item .body { flex: 1; }
+  .tr-text { font-size: 14px; line-height: 1.6; }
+  .tr-norm { font-size: 12px; color: #2e7d32; margin-top: 4px; }
+  .dm-user { font-size: 12px; color: #666; }
+  .dm-text { font-size: 14px; margin-top: 2px; }
+  .nodata { color: #bbb; font-size: 13px; }
+  .empty-tip { text-align: center; color: #bbb; padding: 60px 0; }
+  .toolbar { margin-bottom: 12px; display: flex; gap: 8px; align-items: center; }
+  .toolbar label { font-size: 12px; color: #666; }
+  .toolbar select { font-size: 12px; padding: 4px 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎙️ 直播复盘</h1>
+  <span class="sub">LiveRoomListener · 本机数据 · 不上传</span>
+</header>
+<div class="layout">
+  <aside>
+    <h2>会话列表</h2>
+    <div id="sessList"><div class="empty-tip">加载中…</div></div>
+  </aside>
+  <main id="main">
+    <div class="empty-tip">← 选择一场会话查看复盘</div>
+  </main>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+let showKind = "all"; // all | transcript | danmaku
+
+function fmtMs(ms) {
+  const s = Math.floor((ms || 0) / 1000);
+  return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+}
+function fmtTime(ts) {
+  if (!ts) return "-";
+  const d = new Date(ts);
+  return d.toLocaleString("zh-CN", { hour12: false });
+}
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+async function loadSessions() {
+  try {
+    const r = await fetch("/api/sessions");
+    const data = await r.json();
+    const list = data.sessions || [];
+    if (!list.length) { $("sessList").innerHTML = '<div class="empty-tip">暂无会话</div>'; return; }
+    $("sessList").innerHTML = list.map(s => `
+      <div class="sess" data-id="${esc(s.sessionId)}">
+        <div class="id">${!s.endTime ? '<span class="live-dot"></span>' : ""}${esc(s.sessionId.slice(0, 24))}…</div>
+        <div class="meta">${esc(fmtTime(s.startTime))} · 转写 ${s.transcriptCount} · 弹幕 ${s.danmakuCount}<br>档案：${esc(s.profileName)}</div>
+      </div>`).join("");
+    document.querySelectorAll(".sess").forEach(el => {
+      el.addEventListener("click", () => {
+        document.querySelectorAll(".sess").forEach(x => x.classList.remove("active"));
+        el.classList.add("active");
+        loadDetail(el.dataset.id);
+      });
+    });
+  } catch (e) {
+    $("sessList").innerHTML = '<div class="empty-tip">服务未连接</div>';
+  }
+}
+
+function renderTranscript(t) {
+  let badges = "";
+  if (t.mock) badges += '<span class="badge b-mock">MOCK</span>';
+  if (t.status === "error") badges += '<span class="badge b-err">转写失败</span>';
+  if (t.status === "empty") badges += '<span class="badge b-empty">空转写</span>';
+  let body = `<div class="tr-text">${esc(t.text) || '<span class="nodata">（无文本）</span>'}</div>`;
+  if (t.normText && t.normText !== t.text) {
+    body += `<div class="tr-norm">清洗后：${esc(t.normText)}</div>`;
+  }
+  if (t.error) body += `<div style="font-size:12px;color:#c62828;margin-top:4px">${esc(t.error)}</div>`;
+  return `<div class="t">${fmtMs(t.offsetMs)}</div><div class="body">${body}${badges}</div>`;
+}
+
+function renderDanmaku(d) {
+  let badge = "";
+  if (d.role === "anchor") badge = '<span class="badge b-anchor">主播号</span>';
+  else if (d.role === "water_army") badge = '<span class="badge b-water">水军</span>';
+  return `<div class="t">${fmtMs(d.offsetMs)}</div><div class="body">
+    <div class="dm-user">${esc(d.userName || "观众")}${badge}</div>
+    <div class="dm-text">${esc(d.text)}</div></div>`;
+}
+
+async function loadDetail(sessionId) {
+  $("main").innerHTML = '<div class="empty-tip">加载中…</div>';
+  try {
+    const r = await fetch("/api/session?id=" + encodeURIComponent(sessionId));
+    const data = await r.json();
+    if (!data.ok) throw new Error(data.error);
+    const info = data.info || {};
+    const snap = info.profileSnapshot || {};
+    const dur = info.endTime && info.startTime
+      ? Math.round((info.endTime - info.startTime) / 1000) + "s" : "进行中";
+    const tl = (data.timeline || []).filter(x =>
+      showKind === "all" || (showKind === "transcript" ? x.kind === "transcript" : x.kind === "danmaku"));
+
+    $("main").innerHTML = `
+      <div class="card">
+        <h3>场次信息</h3>
+        <div class="kv">
+          <span>开始：<b>${esc(fmtTime(info.startTime))}</b></span>
+          <span>时长：<b>${dur}</b></span>
+          <span>转写：<b>${data.transcriptCount}</b></span>
+          <span>弹幕：<b>${data.danmakuCount}</b></span>
+          <span>音频段：<b>${info.audioChunks || 0}</b></span>
+          <span>识别档案：<b>${esc(snap.profileName || "通用")}</b><span class="badge b-profile">${esc(snap.profileId || "general")}</span></span>
+        </div>
+        ${(snap.sessionKeywords && snap.sessionKeywords.length)
+          ? `<div style="margin-top:8px;font-size:12px;color:#666">本场关键词：${esc(snap.sessionKeywords.join("，"))}</div>` : ""}
+      </div>
+      <div class="card">
+        <h3>流量 / 成交 / 画面</h3>
+        <div class="nodata">暂无数据（对应采集任务尚未实现）</div>
+      </div>
+      <div class="card">
+        <div class="toolbar">
+          <h3 style="margin:0">时间轴</h3>
+          <label>筛选</label>
+          <select id="kindFilter">
+            <option value="all">全部</option>
+            <option value="transcript">只看转写</option>
+            <option value="danmaku">只看弹幕</option>
+          </select>
+          <span style="font-size:12px;color:#999">${tl.length} 条</span>
+        </div>
+        <div id="tl">
+          ${tl.length ? tl.map(x => `<div class="tl-item">${x.kind === "transcript" ? renderTranscript(x.data) : renderDanmaku(x.data)}</div>`).join("")
+            : '<div class="nodata">暂无转写与弹幕</div>'}
+        </div>
+      </div>`;
+    const kf = $("kindFilter");
+    kf.value = showKind;
+    kf.addEventListener("change", () => { showKind = kf.value; loadDetail(sessionId); });
+  } catch (e) {
+    $("main").innerHTML = '<div class="empty-tip">加载失败：' + esc(e.message) + "</div>";
+  }
+}
+
+loadSessions();
+</script>
+</body>
+</html>

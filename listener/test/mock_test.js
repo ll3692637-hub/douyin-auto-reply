@@ -119,7 +119,33 @@ async function run() {
   const dmLines = fs.readFileSync(path.join(dataDir, "sessions", sessionId, "danmaku.jsonl"), "utf8").trim().split("\n");
   assert.equal(JSON.parse(dmLines[dmLines.length - 1]).role, "audience");
 
-  // "洗一遍"单元测试：别名精确替换 + 替换记录
+  // TASK-UI-001：复盘页与会话 API
+  result = await request("GET", "/");
+  assert.equal(result.status, 200);
+  assert.ok(result.body.includes("直播复盘"));
+
+  result = await request("GET", "/api/sessions");
+  assert.equal(result.status, 200);
+  const sessList = JSON.parse(result.body).sessions;
+  assert.ok(sessList.some(s => s.sessionId === sessionId));
+  assert.ok(!JSON.stringify(sessList).includes("secret"));
+
+  result = await request("GET", "/api/session?id=" + encodeURIComponent(sessionId));
+  assert.equal(result.status, 200);
+  const detail = JSON.parse(result.body);
+  assert.ok(Array.isArray(detail.timeline));
+  assert.ok(detail.timeline.some(x => x.kind === "transcript"));
+  assert.ok(detail.timeline.some(x => x.kind === "danmaku"));
+
+  // 会话详情防穿越
+  result = await request("GET", "/api/session?id=" + encodeURIComponent("../../etc/passwd"));
+  assert.equal(result.status, 400);
+
+  // 本机 Origin 放行（复盘页同源 fetch），恶意 Origin 仍拒绝
+  result = await request("GET", "/api/sessions", undefined, { Origin: `http://${HOST}:${PORT}` });
+  assert.equal(result.status, 200);
+  result = await request("GET", "/api/sessions", undefined, { Origin: "https://evil.example" });
+  assert.equal(result.status, 403);
   const { washText } = require("../textnorm");
   const washed = washText("这个三蚕丝围巾是上还故事的", [
     { correct: "桑蚕丝", aliases: ["三蚕丝"] },
