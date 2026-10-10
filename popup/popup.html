@@ -266,6 +266,12 @@ input:checked + .slider:before { transform: translateX(16px); }
         <span>音频段: <b id="listenAudioChunks">0</b></span> ·
         <span>时长: <b id="listenDuration">0s</b></span>
       </div>
+      <div id="listenProfileRow" style="margin-bottom:8px">
+        <div style="font-size:11px;color:#888;margin-bottom:4px">识别档案</div>
+        <select id="listenProfile" style="width:100%;font-size:12px;padding:6px;border:1px solid #ddd;border-radius:4px"></select>
+        <div style="font-size:11px;color:#888;margin:6px 0 4px">本场关键词（逗号分隔，可空）</div>
+        <input id="listenKeywords" type="text" placeholder="如：新品首发，限时优惠" style="width:100%;font-size:12px;padding:6px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box">
+      </div>
       <button class="btn btn-primary" id="btnListenStart" style="width:100%;background:#2196F3">开始监听</button>
       <button class="btn btn-danger" id="btnListenStop" style="width:100%;display:none;margin-top:6px">停止监听</button>
       <div id="listenError" style="display:none;font-size:11px;color:#f44336;margin-top:6px"></div>

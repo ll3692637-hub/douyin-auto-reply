@@ -182,6 +182,41 @@ function escHtml(str) {
 // =============================================
 let listenPollTimer = null;
 
+// 识别档案下拉框：从本机服务拉取档案列表，恢复上次选择
+async function loadListenProfiles() {
+  const select = document.getElementById("listenProfile");
+  const keywordsInput = document.getElementById("listenKeywords");
+  if (!select) return;
+  let profiles = [];
+  try {
+    const resp = await fetch("http://127.0.0.1:17842/profiles");
+    if (resp.ok) {
+      const data = await resp.json();
+      profiles = (data.profiles || []).filter(p => p && p.id);
+    }
+  } catch (e) { /* 服务没跑则用默认 */ }
+  if (profiles.length === 0) {
+    profiles = [{ id: "general", name: "通用", hotwordCount: 0 }];
+  }
+  select.innerHTML = "";
+  for (const p of profiles) {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = p.hotwordCount > 0 ? `${p.name}（${p.hotwordCount}热词）` : p.name;
+    select.appendChild(opt);
+  }
+  try {
+    const saved = await chrome.storage.local.get("listenProfile");
+    const lp = saved.listenProfile;
+    if (lp) {
+      if (lp.profileId && [...select.options].some(o => o.value === lp.profileId)) {
+        select.value = lp.profileId;
+      }
+      if (keywordsInput && lp.keywordsRaw) keywordsInput.value = lp.keywordsRaw;
+    }
+  } catch (e) {}
+}
+
 function initListenUI(isDouyin, tabId) {
   const section = document.getElementById("listenSection");
   const noPage = document.getElementById("listenNoPage");
@@ -191,6 +226,7 @@ function initListenUI(isDouyin, tabId) {
   if (isDouyin) {
     section.style.display = "block";
     noPage.style.display = "none";
+    loadListenProfiles();
   } else {
     section.style.display = "none";
     noPage.style.display = "block";
@@ -201,8 +237,13 @@ function initListenUI(isDouyin, tabId) {
     startBtn.disabled = true;
     startBtn.textContent = "启动中...";
     document.getElementById("listenError").style.display = "none";
+    // 识别档案 + 本场关键词（TASK-ASR-002）：随 LISTEN_START 透传给本机服务
+    const profileId = document.getElementById("listenProfile")?.value || "general";
+    const keywordsRaw = document.getElementById("listenKeywords")?.value || "";
+    const sessionKeywords = keywordsRaw.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+    try { await chrome.storage.local.set({ listenProfile: { profileId, keywordsRaw } }); } catch (e) {}
     try {
-      const res = await chrome.runtime.sendMessage({ type: "LISTEN_START", tabId });
+      const res = await chrome.runtime.sendMessage({ type: "LISTEN_START", tabId, profileId, sessionKeywords });
       if (res?.ok) {
         updateListenUI(true);
         startPollListenStatus();

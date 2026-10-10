@@ -197,7 +197,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   // ===== 监听模式（与自动回复完全隔离）=====
   if (message.type === "LISTEN_START") {
-    startListening(message.tabId)
+    startListening(message.tabId, { profileId: message.profileId, sessionKeywords: message.sessionKeywords })
       .then(r => { try { sendResponse(r); } catch(e){} })
       .catch(e => { try { sendResponse({ ok: false, error: safeErr(e) }); } catch(_){} });
     return true;
@@ -464,7 +464,8 @@ async function closeOffscreenDocument() {
   offscreenDocCreated = false;
 }
 
-async function startListening(tabId) {
+async function startListening(tabId, opts) {
+  opts = opts || {};
   await ensureListenState();
   if (listenState.active) {
     return { ok: false, error: "already_listening" };
@@ -491,13 +492,15 @@ async function startListening(tabId) {
     return { ok: false, error: "local_service_offline", hint: "请先启动本地监听服务 (cd listener && node server.js)" };
   }
 
-  // 通知本地服务创建会话
+  // 通知本地服务创建会话（带识别档案与本场关键词，TASK-ASR-002）
   const sessionId = "session_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+  const profileId = typeof opts.profileId === "string" && opts.profileId ? opts.profileId : "general";
+  const sessionKeywords = Array.isArray(opts.sessionKeywords) ? opts.sessionKeywords.slice(0, 64) : [];
   try {
     const resp = await fetch(`${LISTEN_LOCAL_SERVER}/session/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId, tabId, startTime: Date.now() })
+      body: JSON.stringify({ sessionId, tabId, startTime: Date.now(), profileId, sessionKeywords })
     });
     if (!resp.ok) throw new Error("session start failed");
   } catch (e) {
