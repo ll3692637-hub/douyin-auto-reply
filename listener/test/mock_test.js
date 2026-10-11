@@ -529,7 +529,7 @@ async function run() {
     product: { name, priceText, price: null, source: "讲解商品卡" }
   });
   const info0 = { startTime: 1000000, endTime: 1000000 + 300000 };
-  // A(60s) → A价格更新(90s) → B(150s)：2 个片段，价格更新归 A
+  // A(60s) → A价格更新(90s) → B(150s)：3 个片段（00:00–01:00 为未识别），价格更新归 A
   let stl = [
     segTl(10000, "transcript", { offsetMs: 10000, text: "t1" }),
     prodNode(60000, "product_switch", "A商品", "??3元"),
@@ -540,23 +540,37 @@ async function run() {
     segTl(200000, "visual", { offsetMs: 200000, metrics: {} })
   ];
   let segs = buildSegments(stl, info0);
+  assert.equal(segs.length, 3);
+  assert.strictEqual(segs[0].product, null);
+  assert.deepEqual([segs[0].startMs, segs[0].endMs], [0, 60000]);
+  assert.deepEqual(segs[0].items.map(x => x.at), [10000]);
+  assert.equal(segs[1].product.product.name, "A商品");
+  assert.deepEqual([segs[1].startMs, segs[1].endMs], [60000, 150000]);
+  assert.equal(segs[1].priceUpdates.length, 1);
+  assert.equal(segs[1].priceUpdates[0].product.priceText, "¥199");
+  assert.deepEqual(segs[1].items.map(x => x.at), [70000, 120000]);
+  assert.equal(segs[2].product.product.name, "B商品");
+  assert.deepEqual([segs[2].startMs, segs[2].endMs], [150000, 300000]);
+  assert.deepEqual(segs[2].items.map(x => x.at), [200000]);
+  // Codex 评审：30 秒的转写不得进入 60 秒才识别到的 A 商品段
+  stl = [
+    segTl(30000, "transcript", { offsetMs: 30000, text: "开场白" }),
+    prodNode(60000, "product_switch", "A商品", "??3元"),
+    segTl(90000, "transcript", { offsetMs: 90000, text: "讲 A" })
+  ];
+  segs = buildSegments(stl, info0);
   assert.equal(segs.length, 2);
-  assert.equal(segs[0].product.product.name, "A商品");
-  assert.equal(segs[0].startMs, 0);
-  assert.equal(segs[0].endMs, 150000);
-  assert.equal(segs[0].priceUpdates.length, 1);
-  assert.equal(segs[0].priceUpdates[0].product.priceText, "¥199");
-  assert.deepEqual(segs[0].items.map(x => x.at), [10000, 70000, 120000]);
-  assert.equal(segs[1].product.product.name, "B商品");
-  assert.equal(segs[1].startMs, 150000);
-  assert.equal(segs[1].endMs, 300000);
-  assert.deepEqual(segs[1].items.map(x => x.at), [200000]);
-  // A → B → A：3 个片段
+  assert.strictEqual(segs[0].product, null);
+  assert.deepEqual(segs[0].items.map(x => x.data.text), ["开场白"]);
+  assert.equal(segs[1].product.product.name, "A商品");
+  assert.deepEqual(segs[1].items.map(x => x.data.text), ["讲 A"]);
+  // A → B → A：4 个片段（00:00–01:00 为未识别）
   stl = [prodNode(60000, "product_switch", "A", null), prodNode(120000, "product_switch", "B", null), prodNode(180000, "product_switch", "A", null)];
   segs = buildSegments(stl, info0);
-  assert.equal(segs.length, 3);
-  assert.deepEqual(segs.map(s => s.product.product.name), ["A", "B", "A"]);
-  assert.deepEqual(segs.map(s => s.startMs), [0, 120000, 180000]);
+  assert.equal(segs.length, 4);
+  assert.strictEqual(segs[0].product, null);
+  assert.deepEqual(segs.slice(1).map(s => s.product.product.name), ["A", "B", "A"]);
+  assert.deepEqual(segs.map(s => s.startMs), [0, 60000, 120000, 180000]);
   // 无商品节点：1 个未识别片段，含全部证据
   stl = [segTl(5000, "transcript", { offsetMs: 5000, text: "t" }), segTl(9000, "danmaku", { offsetMs: 9000, text: "d" })];
   segs = buildSegments(stl, info0);
@@ -570,18 +584,20 @@ async function run() {
   // 缺 type 的旧数据视为 switch
   stl = [segTl(60000, "product", { offsetMs: 60000, key: "id:1", product: { name: "旧" } })];
   segs = buildSegments(stl, info0);
-  assert.equal(segs.length, 1);
-  assert.equal(segs[0].product.product.name, "旧");
-  // 卡片消失不能结束片段：A(60s) 出现，120s/180s 无卡片（无节点），仍只有 1 个 A 片段
+  assert.equal(segs.length, 2);
+  assert.strictEqual(segs[0].product, null);
+  assert.equal(segs[1].product.product.name, "旧");
+  // 卡片消失不能结束片段：A(60s) 出现，120s/180s 无卡片（无节点），A 片段仍只有 1 个
   stl = [
     prodNode(60000, "product_switch", "A商品", "??3元"),
     segTl(120000, "transcript", { offsetMs: 120000, text: "消失期间转写" }),
     segTl(180000, "danmaku", { offsetMs: 180000, text: "消失期间弹幕" })
   ];
   segs = buildSegments(stl, info0);
-  assert.equal(segs.length, 1);
-  assert.equal(segs[0].product.product.name, "A商品");
-  assert.equal(segs[0].items.length, 2);
+  assert.equal(segs.length, 2);
+  assert.strictEqual(segs[0].product, null);
+  assert.equal(segs[1].product.product.name, "A商品");
+  assert.equal(segs[1].items.length, 2);
   // A → 消失 → B：A 片段结束于 B 首次识别时间（UI 已注：非主播实际换品精确时刻）
   stl = [
     prodNode(60000, "product_switch", "A商品", "??3元"),
@@ -589,9 +605,10 @@ async function run() {
     prodNode(180000, "product_switch", "B商品", "??8元")
   ];
   segs = buildSegments(stl, info0);
-  assert.equal(segs.length, 2);
-  assert.equal(segs[0].endMs, 180000);
-  assert.deepEqual(segs[0].items.map(x => x.at), [120000]);
+  assert.equal(segs.length, 3);
+  assert.strictEqual(segs[0].product, null);
+  assert.equal(segs[1].endMs, 180000);
+  assert.deepEqual(segs[1].items.map(x => x.at), [120000]);
   // GET /segment.js 可 served
   result = await request("GET", "/segment.js");
   assert.equal(result.status, 200);

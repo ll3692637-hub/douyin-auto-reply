@@ -9,8 +9,9 @@
 // - 返回 segments: [{ index, startMs, endMs|null, product|null, priceUpdates: [], items: [] }]
 //
 // 规则：
-// 1. 每个 product_switch 对应一个片段；片段结束于下一次 product_switch；
-//    最后一段结束于本场结束时间（进行中则 endMs 为 null）。
+// 1. 每个 product_switch 对应一个片段；首个换品不在 0 秒时，前面单独生成
+//    "未识别商品"片段（识别前的证据不得归入首个商品）；片段结束于下一次
+//    product_switch；最后一段结束于本场结束时间（进行中则 endMs 为 null）。
 // 2. price_update 归入当前片段的价格更新，不另起片段。
 // 3. 无换品节点 → 单个片段，product 为 null（展示为"未识别商品的时间段"），仍含全部证据。
 // 4. 时间边界 [startMs, endMs)：换品节点本身在片段头部展示，不计入 items。
@@ -53,15 +54,21 @@
       // 无换品节点：整场为"未识别商品的时间段"，仍展示全部证据
       segments = [{ index: 0, startMs: 0, endMs: sessionEndMs, product: null, priceUpdates: [], items: [] }];
     } else {
-      segments = switches.map(function (s, i) {
-        return {
-          index: i,
-          startMs: i === 0 ? 0 : s.at, // 首片段从开场起算，避免 at≈0 的换品产生空片段
+      segments = [];
+      // 首个换品不在 0 秒：前面单独生成"未识别商品"片段。
+      // 识别前的转写/弹幕/画面不得归入首个商品，否则 AI 会把之前的话术误判成在讲该商品。
+      if (switches[0].at > 0) {
+        segments.push({ index: 0, startMs: 0, endMs: switches[0].at, product: null, priceUpdates: [], items: [] });
+      }
+      switches.forEach(function (s, i) {
+        segments.push({
+          index: segments.length,
+          startMs: s.at,
           endMs: (i + 1 < switches.length) ? switches[i + 1].at : sessionEndMs,
           product: s.data,
           priceUpdates: [],
           items: []
-        };
+        });
       });
     }
 
