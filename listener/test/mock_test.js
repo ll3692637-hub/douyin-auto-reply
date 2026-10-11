@@ -226,12 +226,30 @@ async function run() {
   assert.equal(detail2.visualCount, 2);
 
   // POST /session/delete：连带删除截图与 visual.jsonl，其他会话不受影响
+  // （sessionId3 先 stop，否则进行中保护会拒绝删除）
+  result = await request("POST", "/session/stop", { sessionId: sessionId3 });
+  assert.equal(result.status, 200);
   result = await request("POST", "/session/delete", { sessionId: sessionId3 });
   assert.equal(result.status, 200);
   assert.ok(!fs.existsSync(path.join(dataDir, "sessions", sessionId3)));
   assert.ok(fs.existsSync(path.join(dataDir, "sessions", sessionId)));
   result = await request("POST", "/session/delete", { sessionId: "../../bad" });
   assert.equal(result.status, 400);
+
+  // Codex 评审必改：进行中的会话禁止删除
+  const activeSessId = "session_deletblock01";
+  result = await request("POST", "/session/start", { sessionId: activeSessId });
+  assert.equal(result.status, 200);
+  result = await request("POST", "/session/delete", { sessionId: activeSessId });
+  assert.equal(result.status, 400);
+  assert.ok(JSON.parse(result.body).error.includes("请先停止监听后再删除"));
+  assert.ok(fs.existsSync(path.join(dataDir, "sessions", activeSessId))); // 文件夹还在
+  // 停止后可删除
+  result = await request("POST", "/session/stop", { sessionId: activeSessId });
+  assert.equal(result.status, 200);
+  result = await request("POST", "/session/delete", { sessionId: activeSessId });
+  assert.equal(result.status, 200);
+  assert.ok(!fs.existsSync(path.join(dataDir, "sessions", activeSessId)));
 
   result = await request("POST", "/session/start", { sessionId: "../../bad" });
   assert.equal(result.status, 400);

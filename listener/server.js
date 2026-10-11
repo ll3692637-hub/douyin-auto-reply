@@ -717,10 +717,14 @@ const server = http.createServer(async (req, res) => {
   }
 
   // POST /session/delete - 删除会话（含截图与 visual.jsonl，AC-VT-07）
+  // Codex 评审必改：进行中的会话禁止删除（否则监听继续写入失败）
   if (req.method === "POST" && req.url === "/session/delete") {
     try {
       const body = await readJsonBody(req);
       assertSessionId(body.sessionId);
+      if (activeSessions.has(body.sessionId)) {
+        throw new Error("session_active：请先停止监听后再删除");
+      }
       activeSessions.delete(body.sessionId);
       fs.rmSync(path.join(SESSIONS_DIR, body.sessionId), { recursive: true, force: true });
       console.log(`[Listener] 会话已删除: ${body.sessionId}`);

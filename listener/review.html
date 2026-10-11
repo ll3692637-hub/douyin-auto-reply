@@ -86,8 +86,8 @@ async function loadSessions() {
     $("sessList").innerHTML = list.map(s => `
       <div class="sess" data-id="${esc(s.sessionId)}">
         <div class="id">${!s.endTime ? '<span class="live-dot"></span>' : ""}${esc(s.sessionId.slice(0, 24))}…
-          <span class="sess-del" data-del="${esc(s.sessionId)}" title="删除会话"
-            style="float:right;color:#ccc;cursor:pointer;font-size:14px">✕</span></div>
+          ${s.endTime ? `<span class="sess-del" data-del="${esc(s.sessionId)}" title="删除会话"
+            style="float:right;color:#ccc;cursor:pointer;font-size:14px">✕</span>` : ""}</div>
         <div class="meta">${esc(fmtTime(s.startTime))} · 转写 ${s.transcriptCount} · 弹幕 ${s.danmakuCount} · 画面 ${s.visualCount || 0}<br>档案：${esc(s.profileName)}</div>
       </div>`).join("");
     document.querySelectorAll(".sess").forEach(el => {
