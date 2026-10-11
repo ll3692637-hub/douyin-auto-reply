@@ -98,6 +98,7 @@ async function sampleVisual() {
     let metrics = { online: null, enter: null, leave: null };
     let rawMetrics = { online: null, enter: null, leave: null };
     let matchedSelector = null;
+    let debugHint = null;
     if (isLiveTab) {
       try {
         const r = await chrome.tabs.sendMessage(tabId, { type: "GET_VISUAL_METRICS" });
@@ -105,6 +106,7 @@ async function sampleVisual() {
           metrics = r.metrics || metrics;
           rawMetrics = r.rawMetrics || rawMetrics;
           matchedSelector = r.matchedSelector || null;
+          debugHint = r.debugHint || null;
         }
       } catch (e) { /* 趋势读取失败，指标保持 null */ }
     }
@@ -132,7 +134,7 @@ async function sampleVisual() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sessionId, sequence: visualSeq, offsetMs, timestamp: Date.now(),
-          metrics, rawMetrics, matchedSelector,
+          metrics, rawMetrics, matchedSelector, debugHint,
           frameData: frameBase64, frameError
         })
       });

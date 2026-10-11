@@ -685,7 +685,8 @@ const server = http.createServer(async (req, res) => {
         frameError: body.frameError || null,
         metrics: body.metrics || { online: null, enter: null, leave: null },
         rawMetrics: body.rawMetrics || { online: null, enter: null, leave: null },
-        matchedSelector: body.matchedSelector || null
+        matchedSelector: body.matchedSelector || null,
+        debugHint: body.debugHint || null
       });
       return sendJson(res, 200, { ok: true, sequence, framePath });
     } catch (e) {

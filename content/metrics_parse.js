@@ -36,13 +36,24 @@ function parseOnlineText(text) {
 
 /**
  * 从直播页 DOM 读取趋势指标（在 content script 上下文中调用）。
- * 返回 { metrics, rawMetrics, matchedSelector }；无稳定数据时对应项为 null。
+ * 返回 { metrics, rawMetrics, matchedSelector, debugHint }；无稳定数据时对应项为 null。
+ * debugHint：找到"在线观众"标签但解析不出数字时，记一小段上下文供校准（本地诊断用）。
  */
+function tryParseOnlineScope(text) {
+  const t = String(text || "").replace(/[\s,，]/g, "");
+  let m = t.match(/([\d.]+)万人在看/) || t.match(/([\d.]+)人在看/);
+  if (m) return parseOnlineText(m[0]);
+  m = t.match(/在线(观众|人数)[\s:：]*([\d.]+万?人?)/);
+  if (m) return parseOnlineText(m[2]);
+  return null;
+}
+
 function readVisualMetrics(doc) {
   const result = {
     metrics: { online: null, enter: null, leave: null },
     rawMetrics: { online: null, enter: null, leave: null },
-    matchedSelector: null
+    matchedSelector: null,
+    debugHint: null
   };
   const d = doc || (typeof document !== "undefined" ? document : null);
   if (!d) return result;
@@ -62,19 +73,31 @@ function readVisualMetrics(doc) {
     }
   }
 
-  // 2. 兜底：文本模式扫描（要求"人在看"后缀，避免误命中弹幕/价格数字）
+  // 2. 文本模式扫描：限定小元素，避免误命中弹幕/价格
   try {
     const els = d.querySelectorAll("span, div, p");
     for (const el of els) {
       const txt = (el.innerText || "").trim();
-      if (!txt || txt.length > 24) continue;
-      if (!/人在看/.test(txt)) continue;
-      const parsed = parseOnlineText(txt);
+      if (!txt || txt.length > 60) continue;
+      if (!/在线观众|在线人数|人在看/.test(txt)) continue;
+      let parsed = tryParseOnlineScope(txt);
+      if (!parsed && el.nextElementSibling && el.nextElementSibling.innerText) {
+        const sibTxt = el.nextElementSibling.innerText.trim();
+        // 兄弟节点通常就是"在线观众"标签后的数字（如 "1.2万"）
+        parsed = tryParseOnlineScope(sibTxt) || parseOnlineText(sibTxt);
+      }
+      if (!parsed && el.parentElement && el.parentElement.innerText && el.parentElement.innerText.length < 160) {
+        parsed = tryParseOnlineScope(el.parentElement.innerText);
+      }
       if (parsed) {
         result.metrics.online = parsed.value;
         result.rawMetrics.online = parsed.raw;
-        result.matchedSelector = "text-pattern:人在看";
+        result.matchedSelector = "text-pattern:在线";
         return result;
+      }
+      // 找到标签但无数字：记上下文供校准
+      if (!result.debugHint && /在线观众|在线人数/.test(txt)) {
+        result.debugHint = txt.slice(0, 60);
       }
     }
   } catch (e) { /* 忽略 */ }

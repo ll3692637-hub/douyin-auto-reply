@@ -172,6 +172,32 @@ async function run() {
   assert.strictEqual(parseOnlineText("今天很开心"), null);
   assert.strictEqual(parseOnlineText(""), null);
 
+  // readVisualMetrics：用假 DOM 验证"在线观众"标签模式（兄弟节点/同元素/无标签）
+  const readVisualMetrics = metricsCtx.readVisualMetrics;
+  const fakeEl = (text, next, parent) => ({
+    innerText: text, nextElementSibling: next || null, parentElement: parent || null
+  });
+  const numEl = fakeEl("1.2万");
+  const labelEl = fakeEl("在线观众", numEl, null);
+  const r1 = readVisualMetrics({
+    querySelector: () => null,
+    querySelectorAll: () => [fakeEl("弹幕很多很长很长"), labelEl, numEl]
+  });
+  assert.equal(r1.metrics.online, 12000);
+  assert.equal(r1.rawMetrics.online, "1.2万");
+  assert.equal(r1.matchedSelector, "text-pattern:在线");
+  const r2 = readVisualMetrics({
+    querySelector: () => null,
+    querySelectorAll: () => [fakeEl("在线观众860人")]
+  });
+  assert.equal(r2.metrics.online, 860);
+  const r3 = readVisualMetrics({
+    querySelector: () => null,
+    querySelectorAll: () => [fakeEl("今天很开心")]
+  });
+  assert.strictEqual(r3.metrics.online, null);
+  assert.strictEqual(r3.matchedSelector, null);
+
   // POST /visual：带图快照
   const fakeJpeg = Buffer.concat([Buffer.from([0xFF, 0xD8, 0xFF, 0xE0]), Buffer.alloc(1000), Buffer.from([0xFF, 0xD9])]);
   result = await request("POST", "/visual", {
