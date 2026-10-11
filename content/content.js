@@ -621,6 +621,14 @@ console.log("[🎯抖音] Content Script v4 已加载");
           rawMetrics: { online: null, enter: null, leave: null }, matchedSelector: null });
       }
     }
+    // TASK-PRODUCT-001 修订版：供 SW 轮询讲解商品卡（只读 DOM，不点击）
+    if (msg.type === "GET_PRODUCT_CARD") {
+      try {
+        sendResponse(parseProductCard(document));
+      } catch (e) {
+        sendResponse({ product: null, matchedSelector: null, debugHint: null });
+      }
+    }
   });
 
   // =============================================

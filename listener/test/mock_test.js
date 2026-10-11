@@ -198,6 +198,79 @@ async function run() {
   assert.strictEqual(r3.metrics.online, null);
   assert.strictEqual(r3.matchedSelector, null);
 
+  // TASK-PRODUCT-001 修订版：商品卡解析 / 稳定标识 / 换品判定（vm 加载 content/product_parse.js）
+  const productCtx = {};
+  vm.createContext(productCtx);
+  vm.runInContext(
+    fs.readFileSync(path.join(__dirname, "..", "..", "content", "product_parse.js"), "utf8"),
+    productCtx
+  );
+  const { parseProductCard, productKey, shouldRecordSwitch } = productCtx;
+  const cardEl = (text, href) => ({
+    innerText: text,
+    querySelector: (sel) => (sel === "a[href]" && href ? { href } : null)
+  });
+  const fakeCardDoc = (el) => ({ querySelector: () => el, querySelectorAll: () => [] });
+  // 讲解中卡片：名称/价格/序号/链接
+  const pr1 = parseProductCard(fakeCardDoc(cardEl(
+    "讲解中\n桑蚕丝拉绒围巾\n¥199\n1号\n去购买",
+    "https://www.douyin.com/product/12345?x=1"
+  )));
+  assert.equal(pr1.product.name, "桑蚕丝拉绒围巾");
+  assert.equal(pr1.product.price, "199");
+  assert.equal(pr1.product.seq, "1");
+  assert.equal(pr1.product.id, "12345");
+  assert.equal(productKey(pr1.product), "id:12345");
+  // 无 ID/链接时用名称＋价格
+  const pr2 = parseProductCard(fakeCardDoc(cardEl("讲解中\n羊毛披肩\n¥239")));
+  assert.equal(productKey(pr2.product), "np:羊毛披肩|239");
+  // 名称缺失 → 不可靠，不产生 key（不判为换品）
+  const pr3 = parseProductCard(fakeCardDoc(cardEl("讲解中\n¥199")));
+  assert.strictEqual(pr3.product, null);
+  assert.strictEqual(productKey({ name: "围巾", price: null }), null);
+  assert.strictEqual(productKey({ name: null, price: "199" }), null);
+  assert.strictEqual(productKey(null), null);
+  // 换品判定 AC：同一商品 10 次只 1 条；A→B→A 共 3 条
+  const kA = "id:111", kB = "id:222";
+  let lastKey = null, switches = 0;
+  for (let i = 0; i < 10; i++) {
+    if (shouldRecordSwitch(lastKey, kA)) { switches++; lastKey = kA; }
+  }
+  assert.equal(switches, 1);
+  lastKey = null; switches = 0;
+  for (const k of [kA, kB, kA]) {
+    if (shouldRecordSwitch(lastKey, k)) { switches++; lastKey = k; }
+  }
+  assert.equal(switches, 3);
+  assert.equal(shouldRecordSwitch(kA, kA), false);
+  assert.equal(shouldRecordSwitch(kA, null), false);
+
+  // POST /product：落盘 + 时间轴 + 校验
+  const prodPayload = (offsetMs, key, name, price) => ({
+    sessionId, offsetMs, timestamp: Date.now(), type: "product_switch", key,
+    matchedSelector: "text-pattern:讲解中", debugHint: null,
+    product: { id: null, link: null, name, price, seq: "1", source: "讲解商品卡", rawText: name + " " + price }
+  });
+  result = await request("POST", "/product", prodPayload(1000, "id:111", "桑蚕丝拉绒围巾", "199"));
+  assert.equal(result.status, 200);
+  result = await request("POST", "/product", prodPayload(2000, "id:222", "羊毛披肩", "239"));
+  assert.equal(result.status, 200);
+  result = await request("POST", "/product", { sessionId, offsetMs: 3000, key: "id:333", product: {} });
+  assert.equal(result.status, 400); // 无名称
+  result = await request("POST", "/product", { sessionId, offsetMs: 3000, product: { name: "x" } });
+  assert.equal(result.status, 400); // 无 key
+  result = await request("POST", "/product", { sessionId: "../../bad", offsetMs: 1, key: "k", product: { name: "x" } });
+  assert.equal(result.status, 400);
+  const pLines = fs.readFileSync(path.join(visualDir, "product.jsonl"), "utf8").trim().split("\n");
+  assert.equal(pLines.length, 2);
+  const pEntry = JSON.parse(pLines[0]);
+  assert.equal(pEntry.type, "product_switch");
+  assert.equal(pEntry.product.name, "桑蚕丝拉绒围巾");
+  result = await request("GET", "/api/session?id=" + encodeURIComponent(sessionId));
+  const detail3 = JSON.parse(result.body);
+  assert.ok(detail3.timeline.some(x => x.kind === "product"));
+  assert.equal(detail3.productCount, 2);
+
   // POST /visual：带图快照
   const fakeJpeg = Buffer.concat([Buffer.from([0xFF, 0xD8, 0xFF, 0xE0]), Buffer.alloc(1000), Buffer.from([0xFF, 0xD9])]);
   result = await request("POST", "/visual", {

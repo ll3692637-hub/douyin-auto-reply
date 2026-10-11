@@ -37,7 +37,7 @@ function persistListenState() {
 
 // =============================================
 // 画面/趋势采样（TASK-VISUAL-TREND-001）
-// 监听激活期间：启动立即采一张，之后每 45 秒采一次。
+// 监听激活期间：启动立即采一张，之后每 5 分钟采一次。
 // VISUAL_INTERVAL_MS 为配置位置；截图压缩到约 1280x720 JPEG q0.7。
 // =============================================
 
@@ -157,6 +157,90 @@ function stopVisualTimer() {
   if (visualTimer) {
     clearInterval(visualTimer);
     visualTimer = null;
+  }
+}
+
+// =============================================
+// 讲解商品换品记录（TASK-PRODUCT-001 修订版）
+// 每 30 秒轮询一次讲解商品卡（只读 DOM，不点击、不读购物车）。
+// 换品判定：productKey 有效且与上次不同；A→B→A 每次都算新的换品。
+// productKey/shouldRecordSwitch 的权威定义在 content/product_parse.js，
+// 此处为 SW 侧精简复刻（content script 上下文不可用），修改时保持一致。
+// =============================================
+
+const PRODUCT_POLL_MS = 30000;
+let productTimer = null;
+
+function swProductKey(p) {
+  if (!p) return null;
+  if (p.id) return "id:" + p.id;
+  if (p.link) return "link:" + p.link;
+  if (p.name && p.price) return "np:" + p.name + "|" + p.price;
+  return null;
+}
+
+function swShouldRecordSwitch(lastKey, key) {
+  return !!(key && key !== lastKey);
+}
+
+async function pollProductCard() {
+  if (!listenState.active) return;
+  const tabId = listenState.tabId;
+  const sessionId = listenState.sessionId;
+  if (!tabId || !sessionId) return;
+  // 必须是已授权的直播页；不要求 active（无截图，只是 DOM 读取）
+  let tab = null;
+  try { tab = await chrome.tabs.get(tabId); } catch (e) {}
+  if (!tab || !tab.url || !tab.url.includes("live.douyin.com")) return;
+
+  let r = null;
+  try {
+    r = await chrome.tabs.sendMessage(tabId, { type: "GET_PRODUCT_CARD" });
+  } catch (e) { return; }
+  if (!r || !r.product) {
+    if (r && r.debugHint) console.log("[Listen] 商品卡:", r.debugHint);
+    return;
+  }
+  const key = swProductKey(r.product);
+  if (!key) {
+    // 标识不可靠：不猜、不判为换品
+    console.log("[Listen] 商品标识不可靠，跳过:", r.debugHint || r.product.name);
+    return;
+  }
+  if (!swShouldRecordSwitch(listenState.lastProductKey || null, key)) return;
+
+  const offsetMs = Date.now() - listenState.startTime;
+  try {
+    const resp = await fetch(`${LISTEN_LOCAL_SERVER}/product`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId, offsetMs, timestamp: Date.now(),
+        type: "product_switch", key,
+        matchedSelector: r.matchedSelector || null,
+        debugHint: r.debugHint || null,
+        product: { ...r.product, source: "讲解商品卡" }
+      })
+    });
+    if (!resp.ok) throw new Error("server " + resp.status);
+    listenState.lastProductKey = key;
+    await persistListenState();
+    console.log("[Listen] 换品:", r.product.name, r.product.price ? ("¥" + r.product.price) : "");
+  } catch (e) {
+    console.warn("[Listen] 换品上报失败:", safeErr(e));
+  }
+}
+
+function startProductTimer() {
+  stopProductTimer();
+  pollProductCard().catch(() => {}); // 启动立即查一次
+  productTimer = setInterval(() => { pollProductCard().catch(() => {}); }, PRODUCT_POLL_MS);
+}
+
+function stopProductTimer() {
+  if (productTimer) {
+    clearInterval(productTimer);
+    productTimer = null;
   }
 }
 
@@ -670,12 +754,16 @@ async function startListening(tabId, opts) {
     startTime: Date.now(),
     danmakuCount: 0,
     audioChunks: 0,
+    lastProductKey: null, // TASK-PRODUCT-001：上次讲解商品的稳定标识（换品去重）
     lastError: null
   };
   await persistListenState();
 
-  // TASK-VISUAL-TREND-001：启动画面/趋势采样（立即一张 + 每 45 秒）
+  // TASK-VISUAL-TREND-001：启动画面/趋势采样（立即一张 + 每 5 分钟）
   startVisualTimer();
+
+  // TASK-PRODUCT-001 修订版：启动讲解商品轮询（立即一次 + 每 30 秒）
+  startProductTimer();
 
   console.log("[Listen] 监听已启动, sessionId:", sessionId, "tabId:", tabId);
   return { ok: true, sessionId };
@@ -692,6 +780,9 @@ async function stopListening() {
     clearInterval(visualTimer);
     visualTimer = null;
   }
+
+  // TASK-PRODUCT-001 修订版：立即停止商品轮询定时器，不得残留
+  stopProductTimer();
 
   // 停止 offscreen 采集
   try {

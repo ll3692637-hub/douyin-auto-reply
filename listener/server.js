@@ -363,6 +363,7 @@ function createSession(sessionId, meta) {
   fs.writeFileSync(path.join(sessionDir, "danmaku.jsonl"), "");
   fs.writeFileSync(path.join(sessionDir, "transcript.jsonl"), "");
   fs.writeFileSync(path.join(sessionDir, "visual.jsonl"), "");
+  fs.writeFileSync(path.join(sessionDir, "product.jsonl"), "");
 
   activeSessions.set(sessionId, { dir: sessionDir, info: sessionInfo });
   return activeSessions.get(sessionId);
@@ -409,6 +410,16 @@ function appendVisual(sessionId, entry) {
   const line = JSON.stringify(entry) + "\n";
   fs.appendFileSync(path.join(session.dir, "visual.jsonl"), line);
   session.info.visualCount = (session.info.visualCount || 0) + 1;
+  persistSession(session);
+}
+
+// TASK-PRODUCT-001 修订版：讲解商品换品节点追加
+function appendProduct(sessionId, entry) {
+  const session = getSession(sessionId);
+  if (!session) return;
+  const line = JSON.stringify(entry) + "\n";
+  fs.appendFileSync(path.join(session.dir, "product.jsonl"), line);
+  session.info.productCount = (session.info.productCount || 0) + 1;
   persistSession(session);
 }
 
@@ -736,6 +747,45 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /product - 讲解商品换品节点（TASK-PRODUCT-001 修订版）
+  // JSON body：{ sessionId, offsetMs, timestamp, type: "product_switch", key,
+  //             product: { id, link, name, price, seq, source }, matchedSelector, debugHint }
+  // 注意：去重在 SW 侧（productKey 比对），服务端只做校验与落盘
+  if (req.method === "POST" && req.url === "/product") {
+    try {
+      const body = await readJsonBody(req);
+      assertSessionId(body.sessionId);
+      if (!Number.isInteger(body.offsetMs) || body.offsetMs < 0 || body.offsetMs > 12 * 3600 * 1000) throw new Error("invalid offsetMs");
+      const session = getSession(body.sessionId);
+      if (!session) throw new Error("unknown session");
+      const p = body.product || {};
+      if (!p.name || typeof p.name !== "string") throw new Error("invalid product name");
+      if (!body.key || typeof body.key !== "string") throw new Error("invalid product key");
+      appendProduct(body.sessionId, {
+        timestamp: new Date(body.timestamp || Date.now()).toISOString(),
+        offsetMs: body.offsetMs,
+        type: "product_switch",
+        key: body.key,
+        product: {
+          id: p.id || null,
+          link: p.link || null,
+          name: p.name,
+          price: p.price || null,
+          seq: p.seq || null,
+          source: "讲解商品卡",
+          rawText: String(p.rawText || "").slice(0, 200)
+        },
+        matchedSelector: body.matchedSelector || null,
+        debugHint: body.debugHint || null
+      });
+      return sendJson(res, 200, { ok: true });
+    } catch (e) {
+      console.error("[Listener] 换品记录错误:", safeError(e));
+      return sendJson(res, 400, { ok: false, error: safeError(e) });
+    }
+    return;
+  }
+
   // 404
   return sendJson(res, 404, { error: "not found" });
 });
@@ -797,6 +847,7 @@ function listSessions() {
         transcriptCount: info.transcriptCount || 0,
         audioChunks: info.audioChunks || 0,
         visualCount: info.visualCount || 0,
+        productCount: info.productCount || 0,
         profileId: (info.profileSnapshot && info.profileSnapshot.profileId) || "general",
         profileName: (info.profileSnapshot && info.profileSnapshot.profileName) || "通用"
       });
@@ -813,13 +864,15 @@ function getSessionDetail(sessionId) {
   const transcript = readJsonLines(path.join(dir, "transcript.jsonl"));
   const danmaku = readJsonLines(path.join(dir, "danmaku.jsonl"));
   const visual = readJsonLines(path.join(dir, "visual.jsonl"));
+  const product = readJsonLines(path.join(dir, "product.jsonl"));
   // 合并时间轴：按 offsetMs 排序；缺失 offsetMs 的按 timestamp 兜底
   const timeline = [
     ...transcript.map(t => ({ kind: "transcript", at: t.offsetMs != null ? t.offsetMs : 0, data: t })),
     ...danmaku.map(d => ({ kind: "danmaku", at: d.offsetMs != null ? d.offsetMs : 0, data: d })),
-    ...visual.map(v => ({ kind: "visual", at: v.offsetMs != null ? v.offsetMs : 0, data: v }))
+    ...visual.map(v => ({ kind: "visual", at: v.offsetMs != null ? v.offsetMs : 0, data: v })),
+    ...product.map(p => ({ kind: "product", at: p.offsetMs != null ? p.offsetMs : 0, data: p }))
   ].sort((a, b) => a.at - b.at);
-  return { info, timeline, transcriptCount: transcript.length, danmakuCount: danmaku.length, visualCount: visual.length };
+  return { info, timeline, transcriptCount: transcript.length, danmakuCount: danmaku.length, visualCount: visual.length, productCount: product.length };
 }
 
 function readJsonBody(req) {
