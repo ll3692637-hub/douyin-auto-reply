@@ -159,13 +159,15 @@ function renderItem(x, sessionId) {
   return "";
 }
 
-// TASK-PRODUCT-001 修订版：换品节点
+// TASK-PRODUCT-001 修订版：换品节点（优先原样显示 priceText，不强行加 ¥）
 function renderProduct(p) {
   const prod = p.product || {};
+  const priceLabel = prod.priceText ? esc(prod.priceText)
+    : (prod.price ? "¥" + esc(prod.price) : "");
   return `<div class="t">${fmtMs(p.offsetMs)}</div><div class="body">
     <span class="badge" style="background:#e8f5e9;color:#2e7d32">换品</span>
     <b>${esc(prod.name || "未知商品")}</b>
-    ${prod.price ? `｜¥${esc(prod.price)}` : ""}
+    ${priceLabel ? `｜${priceLabel}` : ""}
     <span style="color:#999;font-size:12px">｜来源：${esc(prod.source || "讲解商品卡")}</span></div>`;
 }
 

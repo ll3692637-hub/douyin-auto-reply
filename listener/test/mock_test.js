@@ -230,6 +230,23 @@ async function run() {
   assert.strictEqual(productKey({ name: "围巾", price: null }), null);
   assert.strictEqual(productKey({ name: null, price: "199" }), null);
   assert.strictEqual(productKey(null), null);
+  // 锁价/占位：??9元 → priceText 保留原文，price 为 null；有 ID 时换品仍可生成
+  const pr4 = parseProductCard(fakeCardDoc(cardEl(
+    "讲解中\n桑蚕丝拉绒围巾\n??9元\n去购买",
+    "https://www.douyin.com/product/12345"
+  )));
+  assert.equal(pr4.product.name, "桑蚕丝拉绒围巾");
+  assert.equal(pr4.product.priceText, "??9元");
+  assert.strictEqual(pr4.product.price, null);
+  assert.equal(productKey(pr4.product), "id:12345");
+  assert.equal(shouldRecordSwitch(null, productKey(pr4.product)), true);
+  // 明确数值：¥199 → priceText 与 price 都填
+  assert.equal(pr1.product.priceText, "¥199");
+  assert.equal(pr1.product.price, "199");
+  // 待公布类
+  const pr5 = parseProductCard(fakeCardDoc(cardEl("讲解中\n羊毛披肩\n到手价待公布")));
+  assert.equal(pr5.product.priceText, "到手价待公布");
+  assert.strictEqual(pr5.product.price, null);
   // 换品判定 AC：同一商品 10 次只 1 条；A→B→A 共 3 条
   const kA = "id:111", kB = "id:222";
   let lastKey = null, switches = 0;
@@ -266,10 +283,20 @@ async function run() {
   const pEntry = JSON.parse(pLines[0]);
   assert.equal(pEntry.type, "product_switch");
   assert.equal(pEntry.product.name, "桑蚕丝拉绒围巾");
+  // priceText 落盘
+  result = await request("POST", "/product", {
+    sessionId, offsetMs: 2500, timestamp: Date.now(), type: "product_switch", key: "id:999",
+    product: { id: "999", link: null, name: "锁价围巾", price: null, priceText: "??9元", seq: null, source: "讲解商品卡", rawText: "??9元" }
+  });
+  assert.equal(result.status, 200);
+  const pLines2 = fs.readFileSync(path.join(visualDir, "product.jsonl"), "utf8").trim().split("\n");
+  const pLocked = JSON.parse(pLines2[pLines2.length - 1]);
+  assert.equal(pLocked.product.priceText, "??9元");
+  assert.strictEqual(pLocked.product.price, null);
   result = await request("GET", "/api/session?id=" + encodeURIComponent(sessionId));
   const detail3 = JSON.parse(result.body);
   assert.ok(detail3.timeline.some(x => x.kind === "product"));
-  assert.equal(detail3.productCount, 2);
+  assert.equal(detail3.productCount, 3);
 
   // POST /visual：带图快照
   const fakeJpeg = Buffer.concat([Buffer.from([0xFF, 0xD8, 0xFF, 0xE0]), Buffer.alloc(1000), Buffer.from([0xFF, 0xD9])]);

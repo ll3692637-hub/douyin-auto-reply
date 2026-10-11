@@ -771,6 +771,7 @@ const server = http.createServer(async (req, res) => {
           link: p.link || null,
           name: p.name,
           price: p.price || null,
+          priceText: p.priceText || null,
           seq: p.seq || null,
           source: "讲解商品卡",
           rawText: String(p.rawText || "").slice(0, 200)

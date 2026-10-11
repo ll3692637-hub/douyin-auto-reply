@@ -15,18 +15,32 @@ const PRODUCT_SELECTOR_CANDIDATES = [
 ];
 
 /**
+ * 价格提取：priceText 保留页面原文；price 只有明确数值时才填
+ * "¥199" → { priceText: "¥199", price: "199" }
+ * "??9元" / "199~299元" / "到手价待公布" → { priceText: 原文, price: null }
+ */
+function extractPrice(text) {
+  let m = text.match(/[¥￥]\s*(\d+(?:\.\d+)?)/);
+  if (m) return { priceText: m[0].trim(), price: m[1] };
+  m = text.match(/\?+\s*\d*(?:\.\d+)?\s*元/); // 锁价/占位：??9元
+  if (m) return { priceText: m[0].trim(), price: null };
+  m = text.match(/\d+(?:\.\d+)?\s*[-~～]\s*\d+(?:\.\d+)?\s*元/); // 范围价
+  if (m) return { priceText: m[0].trim(), price: null };
+  m = text.match(/(到手价待公布|价格待定|待公布|暂未定价)/);
+  if (m) return { priceText: m[1], price: null };
+  return { priceText: null, price: null };
+}
+
+/**
  * 从商品卡根节点提取字段（只读 DOM，不点击）
- * 返回 { id, link, name, price, seq, source, rawText }；提不出 name 则返回 null
+ * 返回 { id, link, name, price, priceText, seq, source, rawText }；提不出 name 则返回 null
  */
 function extractProductFromCard(root) {
   let text = "";
   try { text = (root.innerText || "").replace(/[\s]+/g, " ").trim(); } catch (e) {}
   if (!text) return null;
 
-  // 价格：¥199 / ￥199
-  let price = null;
-  const pm = text.match(/[¥￥]\s*([\d.]+)/);
-  if (pm) price = pm[1];
+  const { priceText, price } = extractPrice(text);
 
   // 链接 / ID：卡片内的商品链接（只读 href，不跳转）
   let link = null, id = null;
@@ -44,11 +58,11 @@ function extractProductFromCard(root) {
   const sm = text.match(/(\d+)\s*号/);
   if (sm) seq = sm[1];
 
-  // 名称：去掉价格后的行里取最长的一行（过滤讲解中/购买按钮等）
+  // 名称：去掉价格原文后的行里取最长的一行（过滤讲解中/购买按钮等）
   let name = null;
   try {
     const lines = (root.innerText || "").split("\n").map(s =>
-      s.replace(/[¥￥]\s*[\d.]+/g, "").trim()
+      s.replace(/[¥￥]\s*[\d.]+/g, "").replace(/\?+\s*[\d.]*\s*元/g, "").trim()
     ).filter(Boolean);
     const bad = /^(讲解中|正在讲解|去购买|立即购买|加入购物车|看全部|.*商品详情.*)$/;
     const cands = lines.filter(l =>
@@ -59,7 +73,7 @@ function extractProductFromCard(root) {
   } catch (e) {}
 
   if (!name) return null; // 名称是展示与兜底标识的必需项
-  return { id, link, name, price, seq, source: "讲解商品卡", rawText: text.slice(0, 200) };
+  return { id, link, name, price, priceText, seq, source: "讲解商品卡", rawText: text.slice(0, 200) };
 }
 
 /**
