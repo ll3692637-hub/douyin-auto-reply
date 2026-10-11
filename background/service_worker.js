@@ -161,11 +161,12 @@ function stopVisualTimer() {
 }
 
 // =============================================
-// 讲解商品换品记录（TASK-PRODUCT-001 修订版）
+// 讲解商品换品记录（TASK-PRODUCT-001 修订版 + 价格状态补丁）
 // 每 30 秒轮询一次讲解商品卡（只读 DOM，不点击、不读购物车）。
-// 换品判定：productKey 有效且与上次不同；A→B→A 每次都算新的换品。
-// productKey/shouldRecordSwitch 的权威定义在 content/product_parse.js，
+// 节点判定：decideProductNode 的权威定义在 content/product_parse.js，
 // 此处为 SW 侧精简复刻（content script 上下文不可用），修改时保持一致。
+// - key 变化 → product_switch（重置该商品价格状态）
+// - key 相同但 priceText 变化 → price_update（锁价→实价）
 // =============================================
 
 const PRODUCT_POLL_MS = 30000;
@@ -179,8 +180,11 @@ function swProductKey(p) {
   return null;
 }
 
-function swShouldRecordSwitch(lastKey, key) {
-  return !!(key && key !== lastKey);
+function swDecideProductNode(lastKey, lastPriceText, key, priceText) {
+  if (!key) return null;
+  if (key !== lastKey) return "product_switch";
+  if ((priceText || null) !== (lastPriceText || null)) return "price_update";
+  return null;
 }
 
 async function pollProductCard() {
@@ -207,7 +211,13 @@ async function pollProductCard() {
     console.log("[Listen] 商品标识不可靠，跳过:", r.debugHint || r.product.name);
     return;
   }
-  if (!swShouldRecordSwitch(listenState.lastProductKey || null, key)) return;
+  const priceText = r.product.priceText || null;
+  const nodeType = swDecideProductNode(
+    listenState.lastProductKey || null,
+    listenState.lastProductPriceText || null,
+    key, priceText
+  );
+  if (!nodeType) return; // 同商品同价格状态：无新节点
 
   const offsetMs = Date.now() - listenState.startTime;
   try {
@@ -216,7 +226,7 @@ async function pollProductCard() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         sessionId, offsetMs, timestamp: Date.now(),
-        type: "product_switch", key,
+        type: nodeType, key,
         matchedSelector: r.matchedSelector || null,
         debugHint: r.debugHint || null,
         product: { ...r.product, source: "讲解商品卡" }
@@ -224,10 +234,12 @@ async function pollProductCard() {
     });
     if (!resp.ok) throw new Error("server " + resp.status);
     listenState.lastProductKey = key;
+    listenState.lastProductPriceText = priceText;
     await persistListenState();
-    console.log("[Listen] 换品:", r.product.name, r.product.price ? ("¥" + r.product.price) : "");
+    console.log("[Listen]", nodeType === "product_switch" ? "换品:" : "价格更新:",
+      r.product.name, priceText || "");
   } catch (e) {
-    console.warn("[Listen] 换品上报失败:", safeErr(e));
+    console.warn("[Listen] 商品节点上报失败:", safeErr(e));
   }
 }
 
@@ -755,6 +767,7 @@ async function startListening(tabId, opts) {
     danmakuCount: 0,
     audioChunks: 0,
     lastProductKey: null, // TASK-PRODUCT-001：上次讲解商品的稳定标识（换品去重）
+    lastProductPriceText: null, // 价格状态补丁：上次节点的 priceText（价格更新判定）
     lastError: null
   };
   await persistListenState();

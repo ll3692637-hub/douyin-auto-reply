@@ -384,6 +384,10 @@ npm test --prefix listener
 
 **实现（2026-10-11）：** `content/product_parse.js`（解析+稳定标识+换品判定，vm 测试覆盖）；SW 每 30 秒轮询（只读 DOM）；`POST /product` 落盘 `product.jsonl`；复盘时间轴显示换品节点。
 
+**补丁 1（锁价原文保留）：** `priceText` 保留页面原文（`??9元`/范围价/待公布），`price` 仅明确数值时填；复盘页原样显示 `priceText`。
+
+**补丁 2（价格状态节点，2026-10-11）：** 新增 `price_update`——同一商品稳定标识相同但 `priceText` 变化时记录（如锁价 `??3元` → 实价 `¥199`）；`decideProductNode(lastKey, lastPriceText, key, priceText)` 为权威状态机（SW 侧复刻）；带 `?` 的价格一律视为锁价且同卡内锁价优先；切回旧商品记新换品并重置价格状态；复盘页徽标区分"换品"/"价格更新"。
+
 ### TASK-AI-001｜证据驱动的 AI 复盘（最后做）
 
 **输入：** 已采集的时间轴证据。

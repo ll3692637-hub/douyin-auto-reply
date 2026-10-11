@@ -159,13 +159,17 @@ function renderItem(x, sessionId) {
   return "";
 }
 
-// TASK-PRODUCT-001 修订版：换品节点（优先原样显示 priceText，不强行加 ¥）
+// TASK-PRODUCT-001 修订版：换品 / 价格更新节点（优先原样显示 priceText，不强行加 ¥）
 function renderProduct(p) {
   const prod = p.product || {};
+  const isSwitch = p.type !== "price_update";
+  const badge = isSwitch
+    ? '<span class="badge" style="background:#e8f5e9;color:#2e7d32">换品</span>'
+    : '<span class="badge" style="background:#e3f2fd;color:#1565c0">价格更新</span>';
   const priceLabel = prod.priceText ? esc(prod.priceText)
     : (prod.price ? "¥" + esc(prod.price) : "");
   return `<div class="t">${fmtMs(p.offsetMs)}</div><div class="body">
-    <span class="badge" style="background:#e8f5e9;color:#2e7d32">换品</span>
+    ${badge}
     <b>${esc(prod.name || "未知商品")}</b>
     ${priceLabel ? `｜${priceLabel}` : ""}
     <span style="color:#999;font-size:12px">｜来源：${esc(prod.source || "讲解商品卡")}</span></div>`;
@@ -251,7 +255,7 @@ async function loadDetail(sessionId) {
             <option value="transcript">只看转写</option>
             <option value="danmaku">只看弹幕</option>
             <option value="visual">只看画面</option>
-            <option value="product">只看换品</option>
+            <option value="product">只看换品/价格更新</option>
           </select>
           <span style="font-size:12px;color:#999">${tl.length} 条</span>
         </div>

@@ -761,10 +761,12 @@ const server = http.createServer(async (req, res) => {
       const p = body.product || {};
       if (!p.name || typeof p.name !== "string") throw new Error("invalid product name");
       if (!body.key || typeof body.key !== "string") throw new Error("invalid product key");
+      const nodeType = body.type || "product_switch";
+      if (nodeType !== "product_switch" && nodeType !== "price_update") throw new Error("invalid product node type");
       appendProduct(body.sessionId, {
         timestamp: new Date(body.timestamp || Date.now()).toISOString(),
         offsetMs: body.offsetMs,
-        type: "product_switch",
+        type: nodeType,
         key: body.key,
         product: {
           id: p.id || null,

@@ -205,7 +205,7 @@ async function run() {
     fs.readFileSync(path.join(__dirname, "..", "..", "content", "product_parse.js"), "utf8"),
     productCtx
   );
-  const { parseProductCard, productKey, shouldRecordSwitch } = productCtx;
+  const { parseProductCard, productKey, shouldRecordSwitch, decideProductNode, extractPrice } = productCtx;
   const cardEl = (text, href) => ({
     innerText: text,
     querySelector: (sel) => (sel === "a[href]" && href ? { href } : null)
@@ -247,6 +247,37 @@ async function run() {
   const pr5 = parseProductCard(fakeCardDoc(cardEl("讲解中\n羊毛披肩\n到手价待公布")));
   assert.equal(pr5.product.priceText, "到手价待公布");
   assert.strictEqual(pr5.product.price, null);
+  // 价格状态补丁：同卡 ¥199 与 ??3元 共存时锁价优先
+  const ep1 = extractPrice("桑蚕丝围巾 ¥199 ??3元 去购买");
+  assert.equal(ep1.priceText, "??3元");
+  assert.strictEqual(ep1.price, null);
+  const ep2 = extractPrice("到手价 ¥199");
+  assert.equal(ep2.priceText, "¥199");
+  assert.equal(ep2.price, "199");
+  // decideProductNode 验收场景
+  const seq = (steps) => {
+    let lastKey = null, lastPT = null;
+    return steps.map(([k, pt]) => {
+      const t = decideProductNode(lastKey, lastPT, k, pt);
+      if (t === "product_switch") { lastKey = k; lastPT = pt; }
+      else if (t === "price_update") { lastPT = pt; }
+      return t;
+    });
+  };
+  // A 锁价重复 5 次 → 1 条 product_switch
+  assert.deepEqual(seq([["id:1", "??3元"], ["id:1", "??3元"], ["id:1", "??3元"], ["id:1", "??3元"], ["id:1", "??3元"]]),
+    ["product_switch", null, null, null, null]);
+  // A 锁价 → A 实价重复 3 次 → 1 条 switch + 1 条 price_update
+  assert.deepEqual(seq([["id:1", "??3元"], ["id:1", "¥199"], ["id:1", "¥199"], ["id:1", "¥199"]]),
+    ["product_switch", "price_update", null, null]);
+  // A → B 锁价 → A：3 条换品；A 重新出现时记录当时价格状态
+  assert.deepEqual(seq([["id:1", "??3元"], ["id:2", "??8元"], ["id:1", "??3元"]]),
+    ["product_switch", "product_switch", "product_switch"]);
+  assert.deepEqual(seq([["id:1", "??3元"], ["id:2", "??8元"], ["id:1", "¥199"], ["id:1", "¥199"]]),
+    ["product_switch", "product_switch", "product_switch", null]); // 切回 A 已在换品节点记下 ¥199
+  // 标识不可靠 / 无变化 → null
+  assert.strictEqual(decideProductNode("id:1", "??3元", null, "??3元"), null);
+  assert.strictEqual(decideProductNode(null, null, null, null), null);
   // 换品判定 AC：同一商品 10 次只 1 条；A→B→A 共 3 条
   const kA = "id:111", kB = "id:222";
   let lastKey = null, switches = 0;
@@ -293,10 +324,22 @@ async function run() {
   const pLocked = JSON.parse(pLines2[pLines2.length - 1]);
   assert.equal(pLocked.product.priceText, "??9元");
   assert.strictEqual(pLocked.product.price, null);
+  // type=price_update 落盘；非法 type 拒绝
+  result = await request("POST", "/product", {
+    sessionId, offsetMs: 2600, timestamp: Date.now(), type: "price_update", key: "id:111",
+    product: { id: "111", name: "桑蚕丝拉绒围巾", price: "199", priceText: "¥199", source: "讲解商品卡", rawText: "¥199" }
+  });
+  assert.equal(result.status, 200);
+  result = await request("POST", "/product", {
+    sessionId, offsetMs: 2700, type: "bogus", key: "id:111",
+    product: { name: "x" }
+  });
+  assert.equal(result.status, 400);
   result = await request("GET", "/api/session?id=" + encodeURIComponent(sessionId));
   const detail3 = JSON.parse(result.body);
   assert.ok(detail3.timeline.some(x => x.kind === "product"));
-  assert.equal(detail3.productCount, 3);
+  assert.ok(detail3.timeline.some(x => x.kind === "product" && x.data.type === "price_update"));
+  assert.equal(detail3.productCount, 4);
 
   // POST /visual：带图快照
   const fakeJpeg = Buffer.concat([Buffer.from([0xFF, 0xD8, 0xFF, 0xE0]), Buffer.alloc(1000), Buffer.from([0xFF, 0xD9])]);

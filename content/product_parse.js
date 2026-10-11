@@ -16,14 +16,16 @@ const PRODUCT_SELECTOR_CANDIDATES = [
 
 /**
  * 价格提取：priceText 保留页面原文；price 只有明确数值时才填
+ * 锁价优先：同卡同时出现 ¥199 与 ??3元 时取 ??3元（price 为 null）
  * "¥199" → { priceText: "¥199", price: "199" }
  * "??9元" / "199~299元" / "到手价待公布" → { priceText: 原文, price: null }
  */
 function extractPrice(text) {
-  let m = text.match(/[¥￥]\s*(\d+(?:\.\d+)?)/);
-  if (m) return { priceText: m[0].trim(), price: m[1] };
-  m = text.match(/\?+\s*\d*(?:\.\d+)?\s*元/); // 锁价/占位：??9元
+  // 锁价/占位优先：??3元、?999元、??元 —— 带 ? 一律视为锁价
+  let m = text.match(/\?+\s*\d*(?:\.\d+)?\s*元/);
   if (m) return { priceText: m[0].trim(), price: null };
+  m = text.match(/[¥￥]\s*(\d+(?:\.\d+)?)/);
+  if (m) return { priceText: m[0].trim(), price: m[1] };
   m = text.match(/\d+(?:\.\d+)?\s*[-~～]\s*\d+(?:\.\d+)?\s*元/); // 范围价
   if (m) return { priceText: m[0].trim(), price: null };
   m = text.match(/(到手价待公布|价格待定|待公布|暂未定价)/);
@@ -129,4 +131,19 @@ function productKey(p) {
  */
 function shouldRecordSwitch(lastKey, key) {
   return !!(key && key !== lastKey);
+}
+
+/**
+ * 商品节点状态机（权威定义，SW 侧精简复刻，修改时保持一致）
+ * 给定上次 (lastKey, lastPriceText) 与本次 (key, priceText)，
+ * 返回 "product_switch" | "price_update" | null（无变化/标识不可靠）
+ * - key 变化 → product_switch（并重置该商品的价格状态）
+ * - key 相同但 priceText 变化 → price_update（如锁价 ??3元 → 实价 ¥199）
+ * - key 相同且 priceText 相同 → null
+ */
+function decideProductNode(lastKey, lastPriceText, key, priceText) {
+  if (!key) return null;
+  if (key !== lastKey) return "product_switch";
+  if ((priceText || null) !== (lastPriceText || null)) return "price_update";
+  return null;
 }
