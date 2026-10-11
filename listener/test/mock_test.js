@@ -311,6 +311,27 @@ async function run() {
   // 价格节点暂时从 DOM 消失不是价格更新；恢复原价也不应重复记录。
   assert.deepEqual(seq([["id:1", "¥199"], ["id:1", null], ["id:1", "¥199"]]),
     ["product_switch", null, null]);
+  // 卡片消失场景（补丁）：SW 在卡片消失的轮询中直接返回，不碰 lastKey/lastPriceText
+  function swSim(polls) {
+    let lastKey = null, lastPT = null;
+    const nodes = [];
+    for (const p of polls) {
+      if (!p) continue; // 卡片消失：无 product，不调用判定，状态保持
+      const t = decideProductNode(lastKey, lastPT, p[0], p[1]);
+      if (t === "product_switch") { lastKey = p[0]; lastPT = p[1]; }
+      else if (t === "price_update") { lastPT = p[1]; }
+      if (t) nodes.push(t);
+    }
+    return nodes;
+  }
+  // A 出现 → 消失 2 分钟（4 轮空）→ A 再出现：只保留 1 条 A 换品
+  assert.deepEqual(
+    swSim([["id:1", "??3元"], null, null, null, null, ["id:1", "??3元"]]),
+    ["product_switch"]);
+  // A 出现 → 消失 → B 出现：只在 B 首次识别时产生换品
+  assert.deepEqual(
+    swSim([["id:1", "??3元"], null, null, ["id:2", "??8元"]]),
+    ["product_switch", "product_switch"]);
   // 标识不可靠 / 无变化 → null
   assert.strictEqual(decideProductNode("id:1", "??3元", null, "??3元"), null);
   assert.strictEqual(decideProductNode(null, null, null, null), null);
@@ -551,6 +572,26 @@ async function run() {
   segs = buildSegments(stl, info0);
   assert.equal(segs.length, 1);
   assert.equal(segs[0].product.product.name, "旧");
+  // 卡片消失不能结束片段：A(60s) 出现，120s/180s 无卡片（无节点），仍只有 1 个 A 片段
+  stl = [
+    prodNode(60000, "product_switch", "A商品", "??3元"),
+    segTl(120000, "transcript", { offsetMs: 120000, text: "消失期间转写" }),
+    segTl(180000, "danmaku", { offsetMs: 180000, text: "消失期间弹幕" })
+  ];
+  segs = buildSegments(stl, info0);
+  assert.equal(segs.length, 1);
+  assert.equal(segs[0].product.product.name, "A商品");
+  assert.equal(segs[0].items.length, 2);
+  // A → 消失 → B：A 片段结束于 B 首次识别时间（UI 已注：非主播实际换品精确时刻）
+  stl = [
+    prodNode(60000, "product_switch", "A商品", "??3元"),
+    segTl(120000, "transcript", { offsetMs: 120000, text: "空档转写" }),
+    prodNode(180000, "product_switch", "B商品", "??8元")
+  ];
+  segs = buildSegments(stl, info0);
+  assert.equal(segs.length, 2);
+  assert.equal(segs[0].endMs, 180000);
+  assert.deepEqual(segs[0].items.map(x => x.at), [120000]);
   // GET /segment.js 可 served
   result = await request("GET", "/segment.js");
   assert.equal(result.status, 200);

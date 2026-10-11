@@ -190,7 +190,11 @@ function renderSegments(tlWithDelta, info, sessionId) {
     tlWithDelta.map(x => ({ kind: x.kind, at: x.at, data: x.data, _delta: x._delta })),
     info
   );
-  return segs.map(s => {
+  // 补丁：片段边界为系统首次识别到换品的时间，不可声称是主播实际换品的精确时刻；
+  // 卡片短暂消失不结束片段。
+  const note = `<div style="font-size:11px;color:#999;margin-bottom:8px">
+    注：片段边界为系统首次识别到换品的时间，非主播实际换品的精确时刻；商品卡短暂消失不结束片段。</div>`;
+  return note + segs.map(s => {
     const range = s.endMs == null
       ? `${fmtMs(s.startMs)}–进行中`
       : `${fmtMs(s.startMs)}–${fmtMs(s.endMs)}`;
