@@ -6,8 +6,9 @@
 // =============================================
 
 // 在线人数候选选择器（按优先级逐个尝试；命中即停，并记录 selector 供首轮实机校准）
-// 注意：抖音 web 页面结构常变，候选未命中时走文本模式兜底，仍无则存 null（不猜）。
+// 2026-10-11 用户实机确认：data-e2e="live-room-audience"（纯数字，无单位后缀）
 const ONLINE_SELECTOR_CANDIDATES = [
+  '[data-e2e="live-room-audience"]',
   '[data-e2e="live-room-view-count"]',
   ".live-room-view-count",
   '[class*="view-count"]',
@@ -16,7 +17,9 @@ const ONLINE_SELECTOR_CANDIDATES = [
 
 /**
  * 解析在线人数文本 → { value, raw } 或 null
- * "1.2万人" → 12000；"860人" → 860；"1.2万人在看" → 12000
+ * "1.2万人" → 12000；"860人" → 860；"1.2万人在看" → 12000；"31" → 31
+ * 注意：纯数字形式只在已限定作用域的元素上调用（选择器命中/"在线观众"相邻节点），
+ * 不要拿它去扫全页面，否则会误命中任意数字。
  */
 function parseOnlineText(text) {
   const raw = String(text == null ? "" : text).trim();
@@ -26,10 +29,12 @@ function parseOnlineText(text) {
   if (m) return { value: Math.round(parseFloat(m[1]) * 10000), raw };
   m = t.match(/([\d.]+)人在看/);
   if (m) return { value: Math.round(parseFloat(m[1])), raw };
-  // 无"人在看"后缀的万/人：只在选择器命中的元素上使用（调用方保证作用域）
+  // 无"人在看"后缀的万/人/纯数字：只在选择器命中的元素上使用（调用方保证作用域）
   m = t.match(/^([\d.]+)万$/);
   if (m) return { value: Math.round(parseFloat(m[1]) * 10000), raw };
   m = t.match(/^([\d.]+)人$/);
+  if (m) return { value: Math.round(parseFloat(m[1])), raw };
+  m = t.match(/^([\d.]+)$/);
   if (m) return { value: Math.round(parseFloat(m[1])), raw };
   return null;
 }

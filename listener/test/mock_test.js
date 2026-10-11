@@ -169,6 +169,8 @@ async function run() {
   assert.equal(parseOnlineText("1.2万人在看").raw, "1.2万人在看");
   assert.equal(parseOnlineText("860人").value, 860);
   assert.equal(parseOnlineText("2.5万").value, 25000);
+  assert.equal(parseOnlineText("31").value, 31); // 2026-10-11 实机：data-e2e 纯数字
+  assert.equal(parseOnlineText("1,234").value, 1234);
   assert.strictEqual(parseOnlineText("今天很开心"), null);
   assert.strictEqual(parseOnlineText(""), null);
 
@@ -197,6 +199,14 @@ async function run() {
   });
   assert.strictEqual(r3.metrics.online, null);
   assert.strictEqual(r3.matchedSelector, null);
+  // 2026-10-11 实机 pin：data-e2e="live-room-audience" 纯数字
+  const r4 = readVisualMetrics({
+    querySelector: (sel) => sel === '[data-e2e="live-room-audience"]' ? fakeEl("31") : null,
+    querySelectorAll: () => []
+  });
+  assert.equal(r4.metrics.online, 31);
+  assert.equal(r4.rawMetrics.online, "31");
+  assert.equal(r4.matchedSelector, '[data-e2e="live-room-audience"]');
 
   // TASK-PRODUCT-001 修订版：商品卡解析 / 稳定标识 / 换品判定（vm 加载 content/product_parse.js）
   const productCtx = {};
