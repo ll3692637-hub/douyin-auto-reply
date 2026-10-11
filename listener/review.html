@@ -62,9 +62,11 @@
     <div class="empty-tip">← 选择一场会话查看复盘</div>
   </main>
 </div>
+<script src="/segment.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 let showKind = "all"; // all | transcript | danmaku
+let viewMode = "timeline"; // timeline | segments（TASK-SEGMENT-001）
 
 function fmtMs(ms) {
   const s = Math.floor((ms || 0) / 1000);
@@ -175,6 +177,54 @@ function renderProduct(p) {
     <b>${esc(prod.name || "未知商品")}</b>
     ${priceLabel ? `｜${priceLabel}` : ""}
     <span style="color:#999;font-size:12px">｜来源：${esc(prod.source || "讲解商品卡")}</span></div>`;
+}
+
+// TASK-SEGMENT-001：按换品节点分段复盘（无 AI 判断、无评价、无因果推断）
+function segPriceLabel(prod) {
+  prod = prod || {};
+  return prod.priceText ? prod.priceText : (prod.price ? "¥" + prod.price : "");
+}
+
+function renderSegments(tlWithDelta, info, sessionId) {
+  const segs = LiveSegments.buildSegments(
+    tlWithDelta.map(x => ({ kind: x.kind, at: x.at, data: x.data, _delta: x._delta })),
+    info
+  );
+  return segs.map(s => {
+    const range = s.endMs == null
+      ? `${fmtMs(s.startMs)}–进行中`
+      : `${fmtMs(s.startMs)}–${fmtMs(s.endMs)}`;
+    const dur = s.endMs == null ? "进行中" : fmtDur(s.endMs - s.startMs);
+    const head = s.product
+      ? `<span class="badge" style="background:#e8f5e9;color:#2e7d32">换品</span>
+         <b>${esc(s.product.product ? s.product.product.name : (s.product.name || "未知商品"))}</b>
+         ${segPriceLabel(s.product.product || s.product) ? `｜${esc(segPriceLabel(s.product.product || s.product))}` : ""}`
+      : `<span class="badge" style="background:#f5f5f5;color:#888">未识别商品的时间段</span>`;
+    const pu = s.priceUpdates.length
+      ? `<div style="margin-top:6px;font-size:12px;color:#1565c0">价格更新：
+          ${s.priceUpdates.map(p => {
+            const prod = p.product || {};
+            return `<span style="margin-right:12px">${fmtMs(p.offsetMs)}｜${esc(segPriceLabel(prod) || "—")}</span>`;
+          }).join("")}</div>`
+      : "";
+    const counts = { transcript: 0, danmaku: 0, visual: 0 };
+    for (const x of s.items) { if (counts[x.kind] != null) counts[x.kind]++; }
+    const body = s.items.length
+      ? s.items.map(x => `<div class="tl-item">${renderItem(x, sessionId)}</div>`).join("")
+      : '<div class="nodata">本段无转写/弹幕/画面</div>';
+    return `<div class="card" style="border-left:3px solid #2196F3">
+      <h3>片段 ${s.index + 1} <span style="font-size:12px;color:#999;font-weight:normal">${range} · 时长 ${dur}</span></h3>
+      <div style="margin-bottom:4px">${head}</div>${pu}
+      <div style="font-size:12px;color:#999;margin:6px 0">转写 ${counts.transcript} · 弹幕 ${counts.danmaku} · 画面 ${counts.visual}</div>
+      ${body}
+    </div>`;
+  }).join("");
+}
+
+function fmtDur(ms) {
+  const s = Math.round(ms / 1000);
+  const m = Math.floor(s / 60);
+  return m > 0 ? `${m}分${s % 60}秒` : `${s}秒`;
 }
 
 async function deleteSession(sessionId) {
@@ -292,6 +342,10 @@ async function loadDetail(sessionId) {
       <div class="card">
         <div class="toolbar">
           <h3 style="margin:0">时间轴</h3>
+          <div class="seg-toggle" style="display:inline-flex;border:1px solid #ddd;border-radius:4px;overflow:hidden">
+            <button id="viewTimeline" class="seg-btn">完整时间轴</button>
+            <button id="viewSegments" class="seg-btn">分段复盘</button>
+          </div>
           <label>筛选</label>
           <select id="kindFilter">
             <option value="all">全部</option>
@@ -303,13 +357,26 @@ async function loadDetail(sessionId) {
           <span style="font-size:12px;color:#999">${tl.length} 条</span>
         </div>
         <div id="tl">
-          ${tl.length ? tlWithDelta.map(x => `<div class="tl-item">${renderItem(x, sessionId)}</div>`).join("")
-            : '<div class="nodata">暂无转写与弹幕</div>'}
+          ${viewMode === "segments"
+            ? renderSegments(tlWithDelta, info, sessionId)
+            : (tl.length ? tlWithDelta.map(x => `<div class="tl-item">${renderItem(x, sessionId)}</div>`).join("")
+              : '<div class="nodata">暂无转写与弹幕</div>')}
         </div>
       </div>`;
     const kf = $("kindFilter");
     kf.value = showKind;
     kf.addEventListener("change", () => { showKind = kf.value; loadDetail(sessionId); });
+    // TASK-SEGMENT-001：完整时间轴 / 分段复盘切换
+    const vt = $("viewTimeline"), vs = $("viewSegments");
+    const paintSegBtns = () => {
+      for (const [btn, mode] of [[vt, "timeline"], [vs, "segments"]]) {
+        btn.style.cssText = "padding:4px 10px;font-size:12px;border:none;cursor:pointer;" +
+          (viewMode === mode ? "background:#2196F3;color:#fff" : "background:#fff;color:#333");
+      }
+    };
+    paintSegBtns();
+    vt.addEventListener("click", () => { viewMode = "timeline"; loadDetail(sessionId); });
+    vs.addEventListener("click", () => { viewMode = "segments"; loadDetail(sessionId); });
   } catch (e) {
     $("main").innerHTML = '<div class="empty-tip">加载失败：' + esc(e.message) + "</div>";
   }

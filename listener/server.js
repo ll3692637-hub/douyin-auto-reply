@@ -646,6 +646,19 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // GET /segment.js - 分段逻辑（TASK-SEGMENT-001，浏览器端与 Node 测试共用）
+  if (req.method === "GET" && req.url === "/segment.js") {
+    try {
+      const js = fs.readFileSync(path.join(__dirname, "segment.js"), "utf-8");
+      res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8" });
+      res.end(js);
+      return;
+    } catch (e) {
+      return sendJson(res, 500, { ok: false, error: "segment.js missing" });
+    }
+    return;
+  }
+
   // GET /api/sessions - 会话列表
   if (req.method === "GET" && req.url === "/api/sessions") {
     return sendJson(res, 200, { ok: true, sessions: listSessions() });

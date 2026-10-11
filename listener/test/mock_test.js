@@ -500,6 +500,62 @@ async function run() {
   assert.ok(!/cookie|localStorage/i.test(diagStr));
   assert.ok(diagRes.productCard.text.length <= 120);
 
+  // TASK-SEGMENT-001：buildSegments
+  const { buildSegments } = require("../segment.js");
+  const segTl = (at, kind, data) => ({ kind, at, data });
+  const prodNode = (at, type, name, priceText) => segTl(at, "product", {
+    offsetMs: at, type, key: "id:" + name,
+    product: { name, priceText, price: null, source: "讲解商品卡" }
+  });
+  const info0 = { startTime: 1000000, endTime: 1000000 + 300000 };
+  // A(60s) → A价格更新(90s) → B(150s)：2 个片段，价格更新归 A
+  let stl = [
+    segTl(10000, "transcript", { offsetMs: 10000, text: "t1" }),
+    prodNode(60000, "product_switch", "A商品", "??3元"),
+    segTl(70000, "danmaku", { offsetMs: 70000, text: "d1" }),
+    prodNode(90000, "price_update", "A商品", "¥199"),
+    segTl(120000, "transcript", { offsetMs: 120000, text: "t2" }),
+    prodNode(150000, "product_switch", "B商品", "??8元"),
+    segTl(200000, "visual", { offsetMs: 200000, metrics: {} })
+  ];
+  let segs = buildSegments(stl, info0);
+  assert.equal(segs.length, 2);
+  assert.equal(segs[0].product.product.name, "A商品");
+  assert.equal(segs[0].startMs, 0);
+  assert.equal(segs[0].endMs, 150000);
+  assert.equal(segs[0].priceUpdates.length, 1);
+  assert.equal(segs[0].priceUpdates[0].product.priceText, "¥199");
+  assert.deepEqual(segs[0].items.map(x => x.at), [10000, 70000, 120000]);
+  assert.equal(segs[1].product.product.name, "B商品");
+  assert.equal(segs[1].startMs, 150000);
+  assert.equal(segs[1].endMs, 300000);
+  assert.deepEqual(segs[1].items.map(x => x.at), [200000]);
+  // A → B → A：3 个片段
+  stl = [prodNode(60000, "product_switch", "A", null), prodNode(120000, "product_switch", "B", null), prodNode(180000, "product_switch", "A", null)];
+  segs = buildSegments(stl, info0);
+  assert.equal(segs.length, 3);
+  assert.deepEqual(segs.map(s => s.product.product.name), ["A", "B", "A"]);
+  assert.deepEqual(segs.map(s => s.startMs), [0, 120000, 180000]);
+  // 无商品节点：1 个未识别片段，含全部证据
+  stl = [segTl(5000, "transcript", { offsetMs: 5000, text: "t" }), segTl(9000, "danmaku", { offsetMs: 9000, text: "d" })];
+  segs = buildSegments(stl, info0);
+  assert.equal(segs.length, 1);
+  assert.strictEqual(segs[0].product, null);
+  assert.equal(segs[0].items.length, 2);
+  assert.equal(segs[0].endMs, 300000);
+  // 进行中会话：endMs 为 null
+  segs = buildSegments(stl, { startTime: 1000000, endTime: null });
+  assert.strictEqual(segs[0].endMs, null);
+  // 缺 type 的旧数据视为 switch
+  stl = [segTl(60000, "product", { offsetMs: 60000, key: "id:1", product: { name: "旧" } })];
+  segs = buildSegments(stl, info0);
+  assert.equal(segs.length, 1);
+  assert.equal(segs[0].product.product.name, "旧");
+  // GET /segment.js 可 served
+  result = await request("GET", "/segment.js");
+  assert.equal(result.status, 200);
+  assert.ok(result.body.includes("buildSegments"));
+
   // Codex 评审必改：进行中的会话禁止删除
   const activeSessId = "session_deletblock01";
   result = await request("POST", "/session/start", { sessionId: activeSessId });

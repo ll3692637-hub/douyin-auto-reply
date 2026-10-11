@@ -404,6 +404,21 @@ npm test --prefix listener
 
 **已验证（2026-10-11，我方浏览器实机）：** 独立直播间 `data-e2e="live-room-audience"` 与用户提供的 DOM 一致（class `ClV317pr` 为 hash，data-e2e 稳定）；该房间无讲解中卡片（`O2cOhk9W` 槽位为空），商品卡结构仍以用户实机 HTML 为准。
 
+### TASK-SEGMENT-001｜按换品节点生成直播复盘分段（2026-10-11）
+
+**目标：** 本地复盘站按 `product_switch` 自动把一场直播划分为连续片段；每片段聚合对应时间范围内的转写、弹幕、画面、趋势与价格更新。
+
+**实现：**
+
+1. `listener/segment.js`：纯函数 `buildSegments(timeline, info)`（UMD：Node 测试 require，浏览器 `<script src="/segment.js">`，服务端加静态路由）。
+2. 规则：每个 `product_switch` 对应一个片段（首片段从开场起算，避免 at≈0 产生空片段）；片段结束于下一次 `product_switch`，最后一段止于本场结束时间（进行中则 endMs 为 null）；`price_update` 归入当前片段不另起；无换品节点 → 单个"未识别商品的时间段"片段仍含全部证据；时间边界 `[startMs, endMs)`；缺 type 的旧数据视为 switch。
+3. 复盘页时间轴卡片新增"完整时间轴 / 分段复盘"切换；分段视图每片段展示：起止/时长、商品+首次 priceText、段内价格更新、转写/弹幕/画面计数与证据（复用现有渲染函数）。
+4. 不做 AI 判断、不标"讲得好/转化高"、不推断因果；类目通用，无服饰专属逻辑。
+
+**测试（mock）：** A→A价格更新→B 生成 2 片段且价格更新归 A；A→B→A 生成 3 片段；无商品节点生成 1 个未识别片段；时间边界正确；进行中会话 endMs 为 null；旧数据兼容；`/segment.js` 可 served。`npm test` 全过。
+
+**实机未验证（明确标注）：** 分段视图尚未在真实会话数据上验证；待用户 Mac 实机跑一场后切换查看。
+
 ### TASK-AI-001｜证据驱动的 AI 复盘（最后做）
 
 **输入：** 已采集的时间轴证据。
