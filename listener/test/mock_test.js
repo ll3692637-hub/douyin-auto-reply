@@ -652,6 +652,99 @@ async function run() {
   assert.ok(!startupLog.includes("mock-secret-key"));
   console.log("✓ 本地服务真实启动、会话、弹幕、音频、转写模拟与安全边界：全部通过");
   console.log("✓ TASK-ASR-002（识别档案/热词/快照/洗一遍/[MOCK]）与 TASK-DANMAKU-001（账号名单/弹幕打标）：全部通过");
+
+  // TASK-STORAGE-001：存储管理
+  const tinyJpeg = Buffer.from([0xFF, 0xD8, 0xFF, 0xD9]).toString("base64");
+  const stSessA = "session_storageA01"; // 40 天前，已结束，2 张截图
+  const stSessB = "session_storageB01"; // 1 天前，已结束，1 张截图
+  const stSessC = "session_storageC01"; // 进行中
+  const nowMs = Date.now();
+  result = await request("POST", "/session/start", { sessionId: stSessA, startTime: nowMs - 40 * 86400 * 1000 });
+  assert.equal(result.status, 200);
+  result = await request("POST", "/session/start", { sessionId: stSessB, startTime: nowMs - 86400 * 1000 });
+  assert.equal(result.status, 200);
+  result = await request("POST", "/session/start", { sessionId: stSessC });
+  assert.equal(result.status, 200);
+  for (const [sid, seq, ms] of [[stSessA, 1, 1000], [stSessA, 2, 2000], [stSessB, 1, 1000]]) {
+    result = await request("POST", "/visual", { sessionId: sid, sequence: seq, offsetMs: ms, frameData: tinyJpeg });
+    assert.equal(result.status, 200);
+  }
+  result = await request("POST", "/danmaku", { sessionId: stSessA, offsetMs: 1500, userName: "u", userId: "1", text: "hello" });
+  assert.equal(result.status, 200);
+  result = await request("POST", "/session/stop", { sessionId: stSessA });
+  assert.equal(result.status, 200);
+  result = await request("POST", "/session/stop", { sessionId: stSessB });
+  assert.equal(result.status, 200);
+
+  // AC-ST-01：统计与实际目录一致
+  result = await request("GET", "/api/storage");
+  assert.equal(result.status, 200);
+  const st = JSON.parse(result.body).storage;
+  const itemA = st.sessions.find(s => s.sessionId === stSessA);
+  assert.ok(itemA);
+  assert.equal(itemA.frameCount, 2);
+  assert.equal(itemA.active, false);
+  let expectedBytes = 0;
+  const walkSize = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const fp = path.join(d, e.name);
+      if (e.isDirectory()) walkSize(fp); else expectedBytes += fs.statSync(fp).size;
+    }
+  };
+  walkSize(path.join(dataDir, "sessions", stSessA));
+  assert.equal(itemA.bytes, expectedBytes);
+  assert.ok(st.sessionCount >= 3);
+  assert.ok(st.frameCount >= 3);
+  assert.ok(st.totalBytes >= expectedBytes);
+  assert.ok(st.earliest <= nowMs - 40 * 86400 * 1000);
+
+  // AC-ST-05：进行中会话禁止清截图
+  result = await request("POST", "/session/clear-frames", { sessionId: stSessC });
+  assert.equal(result.status, 400);
+  // 路径穿越
+  result = await request("POST", "/session/clear-frames", { sessionId: "../../etc" });
+  assert.equal(result.status, 400);
+  result = await request("POST", "/session/clear-frames", { sessionId: "session_nope12345" });
+  assert.equal(result.status, 400);
+
+  // AC-ST-02：清单场截图后时间线可读，画面条目标记已清理
+  result = await request("POST", "/session/clear-frames", { sessionId: stSessA });
+  assert.equal(result.status, 200);
+  assert.equal(JSON.parse(result.body).clearedFrames, 2);
+  assert.ok(!fs.existsSync(path.join(dataDir, "sessions", stSessA, "frames")));
+  const stVLines = fs.readFileSync(path.join(dataDir, "sessions", stSessA, "visual.jsonl"), "utf-8")
+    .trim().split("\n").map(l => JSON.parse(l));
+  assert.equal(stVLines.length, 2);
+  assert.ok(stVLines.every(v => v.framePath === null && v.frameCleared === true));
+  assert.ok(stVLines.every(v => v.metrics !== undefined)); // 趋势记录保留
+  result = await request("GET", "/api/session?id=" + stSessA);
+  const detailA = JSON.parse(result.body);
+  assert.ok(detailA.timeline.some(x => x.kind === "danmaku")); // 弹幕仍可查看
+  assert.ok(detailA.timeline.filter(x => x.kind === "visual").every(x => x.data.frameCleared === true));
+
+  // AC-ST-04：批量仅删除所选日期之前且已结束的（40 天前 < 10 天 < 1 天；C 进行中不受影响）
+  result = await request("POST", "/sessions/batch-delete", { before: nowMs - 10 * 86400 * 1000 });
+  assert.equal(result.status, 200);
+  const batch = JSON.parse(result.body);
+  assert.ok(batch.deletedIds.includes(stSessA));
+  assert.ok(!batch.deletedIds.includes(stSessB));
+  assert.ok(!batch.deletedIds.includes(stSessC));
+  assert.ok(!fs.existsSync(path.join(dataDir, "sessions", stSessA)));
+  assert.ok(fs.existsSync(path.join(dataDir, "sessions", stSessB)));
+  assert.ok(fs.existsSync(path.join(dataDir, "sessions", stSessC)));
+  // 非法 before → 400 且不删任何东西
+  result = await request("POST", "/sessions/batch-delete", { before: "昨天" });
+  assert.equal(result.status, 400);
+  assert.ok(fs.existsSync(path.join(dataDir, "sessions", stSessB)));
+
+  // AC-ST-03：删单场后目录消失，其他会话不受影响
+  result = await request("POST", "/session/delete", { sessionId: stSessB });
+  assert.equal(result.status, 200);
+  assert.ok(!fs.existsSync(path.join(dataDir, "sessions", stSessB)));
+  assert.ok(fs.existsSync(path.join(dataDir, "sessions", stSessC)));
+  result = await request("POST", "/session/stop", { sessionId: stSessC });
+  assert.equal(result.status, 200);
+  console.log("✓ TASK-STORAGE-001（存储管理）：全部通过");
 }
 
 run().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => {

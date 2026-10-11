@@ -659,6 +659,92 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // =============================================
+  // 存储管理（TASK-STORAGE-001）
+  // 只统计/清理本地会话目录；绝不触碰密钥、档案、名单、规则配置。
+  // =============================================
+
+  // GET /api/storage - 本机监听数据概览（只读）
+  if (req.method === "GET" && req.url === "/api/storage") {
+    try {
+      return sendJson(res, 200, { ok: true, storage: getStorageOverview() });
+    } catch (e) {
+      return sendJson(res, 400, { ok: false, error: safeError(e) });
+    }
+    return;
+  }
+
+  // POST /session/clear-frames - 仅清理某已结束会话的截图
+  // 删除 frames/ 目录；visual.jsonl 条目 framePath→null 并标记 frameCleared；
+  // 转写/弹幕/商品/趋势记录保留。进行中的会话拒绝。
+  if (req.method === "POST" && req.url === "/session/clear-frames") {
+    try {
+      const body = await readJsonBody(req);
+      assertSessionId(body.sessionId);
+      if (activeSessions.has(body.sessionId)) {
+        throw new Error("session_active：请先停止监听后再清理截图");
+      }
+      const dir = path.join(SESSIONS_DIR, body.sessionId);
+      let stat;
+      try { stat = fs.statSync(dir); } catch (e) { throw new Error("unknown session"); }
+      if (!stat.isDirectory()) throw new Error("unknown session");
+
+      let cleared = 0;
+      const framesDir = path.join(dir, "frames");
+      try {
+        cleared = fs.readdirSync(framesDir).filter(f => /^\d+_\d+\.jpg$/.test(f)).length;
+        fs.rmSync(framesDir, { recursive: true, force: true });
+      } catch (e) { /* 无截图目录 */ }
+
+      const vPath = path.join(dir, "visual.jsonl");
+      let lines = [];
+      try { lines = readJsonLines(vPath); } catch (e) { /* 无 visual 记录 */ }
+      const updated = lines.map(v => ({ ...v, framePath: null, frameCleared: true }));
+      fs.writeFileSync(vPath, updated.map(v => JSON.stringify(v)).join("\n") + (updated.length ? "\n" : ""));
+      console.log(`[Listener] 会话截图已清理: ${body.sessionId} (${cleared} 张)`);
+      return sendJson(res, 200, { ok: true, clearedFrames: cleared });
+    } catch (e) {
+      return sendJson(res, 400, { ok: false, error: safeError(e) });
+    }
+    return;
+  }
+
+  // POST /sessions/batch-delete - 按日期批量删除已结束的旧会话
+  // body: { before: <时间戳毫秒> }；仅删除 endTime 非空、非进行中、startTime < before 的会话。
+  // 先整体校验再执行；任一异常则 400 且一个都不删。二次确认由前端完成。
+  if (req.method === "POST" && req.url === "/sessions/batch-delete") {
+    try {
+      const body = await readJsonBody(req);
+      const before = body.before;
+      if (!Number.isFinite(before) || before <= 0) throw new Error("invalid before");
+      const targets = [];
+      for (const s of listSessions()) {
+        if (activeSessions.has(s.sessionId)) continue;
+        if (!s.endTime) continue; // 未正常结束的不碰
+        if (!(s.startTime < before)) continue;
+        const dir = path.join(SESSIONS_DIR, s.sessionId);
+        let stat;
+        try { stat = fs.statSync(dir); } catch (e) { continue; }
+        if (!stat.isDirectory()) continue;
+        targets.push({ sessionId: s.sessionId, dir, bytes: dirSizeBytes(dir) });
+      }
+      let freed = 0;
+      const deletedIds = [];
+      for (const t of targets) {
+        if (activeSessions.has(t.sessionId)) continue; // 执行前复查：期间变为进行中的跳过
+        fs.rmSync(t.dir, { recursive: true, force: true });
+        freed += t.bytes;
+        deletedIds.push(t.sessionId);
+        console.log(`[Listener] 会话已批量删除: ${t.sessionId}`);
+      }
+      return sendJson(res, 200, { ok: true, deleted: deletedIds.length, freedBytes: freed,
+        deletedIds });
+    } catch (e) {
+      return sendJson(res, 400, { ok: false, error: safeError(e) });
+    }
+    return;
+  }
+
   // GET /api/sessions - 会话列表
   if (req.method === "GET" && req.url === "/api/sessions") {
     return sendJson(res, 200, { ok: true, sessions: listSessions() });
@@ -919,6 +1005,71 @@ function readJsonLines(filePath) {
   } catch (e) {
     return [];
   }
+}
+
+// ---- 存储管理 helpers（TASK-STORAGE-001）----
+
+function dirSizeBytes(dir) {
+  let total = 0;
+  let entries = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return 0; }
+  for (const e of entries) {
+    const fp = path.join(dir, e.name);
+    try {
+      if (e.isDirectory()) total += dirSizeBytes(fp);
+      else total += fs.statSync(fp).size;
+    } catch (err) { /* 忽略单文件错误 */ }
+  }
+  return total;
+}
+
+function countFrames(sessionDir) {
+  const framesDir = path.join(sessionDir, "frames");
+  let files = [];
+  try {
+    files = fs.readdirSync(framesDir).filter(f => /^\d+_\d+\.jpg$/.test(f));
+  } catch (e) { return { count: 0, bytes: 0 }; }
+  let bytes = 0;
+  for (const f of files) {
+    try { bytes += fs.statSync(path.join(framesDir, f)).size; } catch (e) {}
+  }
+  return { count: files.length, bytes };
+}
+
+function getStorageOverview() {
+  const items = [];
+  let totalBytes = 0, totalFrames = 0, frameBytes = 0;
+  let earliest = null, latest = null;
+  for (const s of listSessions()) {
+    const dir = path.join(SESSIONS_DIR, s.sessionId);
+    const bytes = dirSizeBytes(dir);
+    const fr = countFrames(dir);
+    totalBytes += bytes;
+    totalFrames += fr.count;
+    frameBytes += fr.bytes;
+    if (s.startTime) {
+      if (earliest == null || s.startTime < earliest) earliest = s.startTime;
+      if (latest == null || s.startTime > latest) latest = s.startTime;
+    }
+    items.push({
+      sessionId: s.sessionId,
+      startTime: s.startTime || null,
+      endTime: s.endTime || null,
+      active: activeSessions.has(s.sessionId),
+      frameCount: fr.count,
+      bytes
+    });
+  }
+  items.sort((a, b) => (b.startTime || 0) - (a.startTime || 0));
+  return {
+    sessionCount: items.length,
+    frameCount: totalFrames,
+    totalBytes,
+    frameBytes,
+    earliest,
+    latest,
+    sessions: items
+  };
 }
 
 function listSessions() {

@@ -55,6 +55,7 @@
   <aside>
     <h2>会话列表</h2>
     <div id="sessList"><div class="empty-tip">加载中…</div></div>
+    <button id="btnStorage" style="width:100%;margin-top:10px;padding:8px;border:1px solid #ddd;border-radius:6px;background:#fff;cursor:pointer;font-size:13px">💾 存储管理</button>
     <h2 style="margin-top:16px">页面诊断 <span style="font-size:11px;color:#999;font-weight:normal">本机保存</span></h2>
     <div id="diagList"><div class="empty-tip">暂无诊断报告</div></div>
   </aside>
@@ -133,10 +134,13 @@ function renderDanmaku(d) {
 // netChange 由调用方传入（相对上一快照的在线显示净变化），null 则不显示
 function renderVisual(v, sessionId, netChange) {
   const file = v.framePath ? v.framePath.split("/").pop() : null;
-  const img = file
-    ? `<img src="/api/frame?sessionId=${encodeURIComponent(sessionId)}&file=${encodeURIComponent(file)}"
-         loading="lazy" style="max-width:280px;border-radius:6px;border:1px solid #eee" alt="画面截图">`
-    : `<span class="nodata">无截图${v.frameError ? "（" + esc(v.frameError) + "）" : ""}</span>`;
+  // TASK-STORAGE-001：已清理的截图显示"截图已清理"，不留失效路径
+  const img = v.frameCleared
+    ? `<span class="nodata">截图已清理</span>`
+    : (file
+      ? `<img src="/api/frame?sessionId=${encodeURIComponent(sessionId)}&file=${encodeURIComponent(file)}"
+           loading="lazy" style="max-width:280px;border-radius:6px;border:1px solid #eee" alt="画面截图">`
+      : `<span class="nodata">无截图${v.frameError ? "（" + esc(v.frameError) + "）" : ""}</span>`);
   const m = v.metrics || {};
   const rm = v.rawMetrics || {};
   let metricLine = "";
@@ -291,6 +295,129 @@ async function showDiagDetail(id) {
   }
 }
 
+// TASK-STORAGE-001：存储管理
+function fmtBytes(b) {
+  if (b == null) return "—";
+  if (b < 1024) return b + " B";
+  if (b < 1024 * 1024) return (b / 1024).toFixed(1) + " KB";
+  if (b < 1024 * 1024 * 1024) return (b / 1024 / 1024).toFixed(1) + " MB";
+  return (b / 1024 / 1024 / 1024).toFixed(2) + " GB";
+}
+
+let storageCache = null;
+
+async function showStorage() {
+  document.querySelectorAll(".sess").forEach(x => x.classList.remove("active"));
+  $("main").innerHTML = '<div class="empty-tip">加载中…</div>';
+  try {
+    const r = await fetch("/api/storage");
+    const data = await r.json();
+    if (!data.ok) throw new Error(data.error);
+    const st = data.storage;
+    storageCache = st;
+    const rows = st.sessions.map(s => {
+      const dur = (s.startTime && s.endTime)
+        ? fmtDur(s.endTime - s.startTime) : (s.active ? "进行中" : "—");
+      const status = s.active
+        ? '<span class="badge" style="background:#fff3e0;color:#e65100">进行中</span>'
+        : '<span class="badge" style="background:#f5f5f5;color:#888">已结束</span>';
+      const dis = s.active ? "disabled style='opacity:.4;cursor:not-allowed'" : "";
+      return `<tr>
+        <td>${esc(fmtTime(s.startTime))}</td>
+        <td>${dur}</td>
+        <td>${s.frameCount}</td>
+        <td>${fmtBytes(s.bytes)}</td>
+        <td>${status}</td>
+        <td>
+          <button data-clear="${esc(s.sessionId)}" ${dis}>清截图</button>
+          <button data-delone="${esc(s.sessionId)}" ${dis} style="color:#d32f2f">删整场</button>
+        </td>
+      </tr>`;
+    }).join("");
+    $("main").innerHTML = `
+      <div class="card"><h3>存储管理 <span style="font-size:11px;color:#999;font-weight:normal">本机数据 · 不上传</span></h3>
+        <div class="kv">
+          <span>会话：<b>${st.sessionCount}</b> 场</span>
+          <span>截图：<b>${st.frameCount}</b> 张</span>
+          <span>总占用：<b>${fmtBytes(st.totalBytes)}</b></span>
+          <span>截图占用：<b>${fmtBytes(st.frameBytes)}</b></span>
+          <span>最早：<b>${st.earliest ? esc(fmtTime(st.earliest)) : "—"}</b></span>
+          <span>最新：<b>${st.latest ? esc(fmtTime(st.latest)) : "—"}</b></span>
+        </div>
+      </div>
+      <div class="card"><h3>批量清理</h3>
+        <div style="font-size:13px;margin-bottom:8px">
+          删除 <input type="date" id="batchBefore" style="padding:4px"> 之前开始的<strong>已结束</strong>会话
+          <button id="btnBatchGo" style="margin-left:8px">清理</button>
+        </div>
+        <div id="batchHint" style="font-size:12px;color:#999">仅删除已结束会话；进行中的会话不会被删除；操作前会二次确认。</div>
+      </div>
+      <div class="card"><h3>会话明细</h3>
+        <table style="width:100%;font-size:13px;border-collapse:collapse">
+          <tr style="color:#999;text-align:left"><th>开始时间</th><th>时长</th><th>截图</th><th>占用</th><th>状态</th><th>操作</th></tr>
+          ${rows || '<tr><td colspan="6" class="nodata">暂无会话</td></tr>'}
+        </table>
+      </div>`;
+    // 批量清理：先展示"将删除 N 场、预计释放 X MB"，二次确认后执行
+    $("btnBatchGo").addEventListener("click", async () => {
+      const dv = $("batchBefore").value;
+      if (!dv) { $("batchHint").textContent = "请先选择日期。"; return; }
+      const before = new Date(dv + "T00:00:00").getTime();
+      const targets = st.sessions.filter(s => !s.active && s.endTime && s.startTime < before);
+      if (!targets.length) { $("batchHint").textContent = "所选日期之前没有可删除的已结束会话。"; return; }
+      const freed = targets.reduce((a, s) => a + s.bytes, 0);
+      $("batchHint").innerHTML =
+        `将删除 <b>${targets.length}</b> 场、预计释放 <b>${fmtBytes(freed)}</b>。` +
+        `<button id="btnBatchConfirm" style="margin-left:8px;color:#d32f2f">确认删除</button>`;
+      $("btnBatchConfirm").addEventListener("click", async () => {
+        if (!confirm(`确定删除 ${targets.length} 场已结束会话吗？此操作不可恢复。`)) return; // 取消则不改变任何数据
+        const rr = await fetch("/sessions/batch-delete", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ before })
+        });
+        const dd = await rr.json();
+        if (dd.ok) {
+          alert(`已删除 ${dd.deleted} 场，释放 ${fmtBytes(dd.freedBytes)}。`);
+          loadSessions(); showStorage();
+        } else {
+          alert("批量删除失败：" + (dd.error || "未知错误"));
+        }
+      });
+    });
+    // 单场操作
+    document.querySelectorAll("[data-clear]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        if (btn.disabled) return;
+        const id = btn.dataset.clear;
+        if (!confirm(`清除会话 ${id} 的全部截图吗？转写、弹幕、商品与趋势记录会保留。`)) return;
+        const rr = await fetch("/session/clear-frames", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId: id })
+        });
+        const dd = await rr.json();
+        if (dd.ok) { alert(`已清除 ${dd.clearedFrames} 张截图。`); loadSessions(); showStorage(); }
+        else alert("清理失败：" + (dd.error || "未知错误"));
+      });
+    });
+    document.querySelectorAll("[data-delone]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        if (btn.disabled) return;
+        const id = btn.dataset.delone;
+        if (!confirm(`删除会话 ${id} 的全部数据（含截图）？此操作不可恢复。`)) return;
+        const rr = await fetch("/session/delete", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId: id })
+        });
+        const dd = await rr.json();
+        if (dd.ok) { loadSessions(); showStorage(); }
+        else alert("删除失败：" + (dd.error || "未知错误"));
+      });
+    });
+  } catch (e) {
+    $("main").innerHTML = '<div class="empty-tip">存储信息加载失败：' + esc(e.message) + "</div>";
+  }
+}
+
 async function loadDetail(sessionId) {
   $("main").innerHTML = '<div class="empty-tip">加载中…</div>';
   try {
@@ -388,6 +515,7 @@ async function loadDetail(sessionId) {
 
 loadSessions();
 loadDiags();
+document.getElementById("btnStorage").addEventListener("click", showStorage);
 </script>
 </body>
 </html>
