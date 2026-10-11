@@ -388,6 +388,22 @@ npm test --prefix listener
 
 **补丁 2（价格状态节点，2026-10-11）：** 新增 `price_update`——同一商品稳定标识相同但 `priceText` 变化时记录（如锁价 `??3元` → 实价 `¥199`）；`decideProductNode(lastKey, lastPriceText, key, priceText)` 为权威状态机（SW 侧复刻）；带 `?` 的价格一律视为锁价且同卡内锁价优先；切回旧商品记新换品并重置价格状态；复盘页徽标区分"换品"/"价格更新"。
 
+### TASK-DOM-DIAGNOSTIC-001｜真实页面选择器诊断与验收（2026-10-11）
+
+**目标：** 本地"页面诊断"能力，用真实抖音直播页验证商品卡与在线人数选择器；禁止再以模拟 DOM 或候选选择器命中作为完成依据。
+
+**实现：**
+
+1. `content/diag.js`：`runPageDiagnostic()`——采集讲解商品卡与在线人数附近的标签结构、class/data 属性（data-e2e 优先）、有限长度可见文字（120 字符）、可复用选择器建议、祖先链（3 层）。
+2. 触发：popup "页面诊断"按钮 → SW `RUN_DIAGNOSTIC`（仅当前已授权直播标签页）→ content 执行 → POST `/diagnostic`。
+3. 脱敏：只取目标容器结构与截断文本；不读 cookie/localStorage/请求头，不采弹幕全文/私信/用户列表；敏感命名 data-* 跳过；结果只存本机 `sessions/_diagnostic/`（gitignore 覆盖），不进 Git。
+4. 复盘页左侧新增"页面诊断"区：报告列表（商品卡 ✓/✗、在线人数 ✓/✗）+ 点击看脱敏 JSON。
+5. 用户无需开 DevTools、无需复制 HTML。
+
+**实机验证（待用户执行）：** 直播页点诊断 → 复盘页看结果 → 按结果固定/调整选择器 → 重载扩展 → 开监听验证（持续显示只 1 条换品；切品新增；在线人数读到真实值或明确记"无可稳定读取指标"）。
+
+**已验证（2026-10-11，我方浏览器实机）：** 独立直播间 `data-e2e="live-room-audience"` 与用户提供的 DOM 一致（class `ClV317pr` 为 hash，data-e2e 稳定）；该房间无讲解中卡片（`O2cOhk9W` 槽位为空），商品卡结构仍以用户实机 HTML 为准。
+
 ### TASK-AI-001｜证据驱动的 AI 复盘（最后做）
 
 **输入：** 已采集的时间轴证据。

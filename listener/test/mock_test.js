@@ -441,6 +441,65 @@ async function run() {
   result = await request("POST", "/session/delete", { sessionId: "../../bad" });
   assert.equal(result.status, 400);
 
+  // TASK-DOM-DIAGNOSTIC-001：诊断端点
+  result = await request("POST", "/diagnostic", { diagnostic: {
+    timestamp: new Date().toISOString(), url: "live.douyin.com/",
+    productCard: { found: true, suggestedSelector: 'img[src*="jiangjiezhong"]' },
+    onlineCount: { found: true, suggestedSelector: '[data-e2e="live-room-audience"]' }
+  }});
+  assert.equal(result.status, 200);
+  const diagId = JSON.parse(result.body).id;
+  assert.ok(/^diag_[a-z0-9]+$/.test(diagId));
+  assert.ok(fs.existsSync(path.join(dataDir, "sessions", "_diagnostic", diagId + ".json")));
+  result = await request("GET", "/api/diagnostics");
+  assert.ok(JSON.parse(result.body).list.some(d => d.id === diagId));
+  result = await request("GET", "/api/diagnostic?id=" + diagId);
+  assert.equal(JSON.parse(result.body).diagnostic.productCard.suggestedSelector, 'img[src*="jiangjiezhong"]');
+  result = await request("GET", "/api/diagnostic?id=..%2f..%2fx");
+  assert.equal(result.status, 400);
+  result = await request("POST", "/diagnostic", { nope: 1 });
+  assert.equal(result.status, 400);
+  // 诊断目录不污染会话列表
+  result = await request("GET", "/api/sessions");
+  assert.ok(!JSON.parse(result.body).sessions.some(s => s.sessionId.includes("diag")));
+
+  // runPageDiagnostic：vm 按 manifest 顺序加载三个 content 脚本 + 注入假 DOM
+  const diagCtx = {};
+  vm.createContext(diagCtx);
+  for (const f of ["metrics_parse.js", "product_parse.js", "diag.js"]) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "..", "content", f), "utf8"), diagCtx);
+  }
+  const dPriceDiv = { innerText: "券后价¥149", parentElement: null };
+  const dCard = { nodeType: 1, tagName: "DIV", className: "g7Yo4AYK", id: "",
+    innerText: "商品标题文本 券后价¥149", parentElement: null, attributes: [],
+    getAttribute: () => null, querySelector: () => null, querySelectorAll: () => [] };
+  dPriceDiv.parentElement = dCard;
+  const dBadge = { nodeType: 1, tagName: "IMG", parentElement: dPriceDiv,
+    getAttribute: (n) => (n === "src" ? "https://x/jiangjiezhongs.png" : null), attributes: [] };
+  const dOnline = { nodeType: 1, tagName: "DIV", className: "ClV317pr", id: "", innerText: "1679",
+    parentElement: null, attributes: [{ name: "data-e2e", value: "live-room-audience" }],
+    getAttribute: (n) => (n === "data-e2e" ? "live-room-audience" : null) };
+  diagCtx.document = {
+    querySelector: (sel) => {
+      if (sel.includes("jiangjiezhong")) return dBadge;
+      if (sel === '[data-e2e="live-room-audience"]') return dOnline;
+      return null;
+    },
+    querySelectorAll: () => []
+  };
+  diagCtx.location = { hostname: "live.douyin.com", pathname: "/" };
+  const diagRes = diagCtx.runPageDiagnostic();
+  assert.equal(diagRes.productCard.found, true);
+  assert.equal(diagRes.productCard.suggestedSelector, "div.g7Yo4AYK");
+  assert.equal(diagRes.productCard.badge.suggestedSelector, 'img[src*="jiangjiezhong"]');
+  assert.equal(diagRes.onlineCount.found, true);
+  assert.equal(diagRes.onlineCount.hitSelector, '[data-e2e="live-room-audience"]');
+  assert.equal(diagRes.onlineCount.suggestedSelector, '[data-e2e="live-room-audience"]');
+  // 脱敏断言：无 cookie/localStorage 痕迹，文本被截断
+  const diagStr = JSON.stringify(diagRes);
+  assert.ok(!/cookie|localStorage/i.test(diagStr));
+  assert.ok(diagRes.productCard.text.length <= 120);
+
   // Codex 评审必改：进行中的会话禁止删除
   const activeSessId = "session_deletblock01";
   result = await request("POST", "/session/start", { sessionId: activeSessId });

@@ -282,6 +282,32 @@ function initListenUI(isDouyin, tabId) {
     stopBtn.textContent = "停止监听";
   });
 
+  // TASK-DOM-DIAGNOSTIC-001：页面诊断（只在当前直播页执行，结果存本机）
+  const diagBtn = document.getElementById("btnPageDiag");
+  diagBtn.addEventListener("click", async () => {
+    diagBtn.disabled = true;
+    diagBtn.textContent = "诊断中...";
+    const okEl = document.getElementById("diagResult");
+    const errEl = document.getElementById("listenError");
+    okEl.style.display = "none";
+    errEl.style.display = "none";
+    try {
+      const res = await chrome.runtime.sendMessage({ type: "RUN_DIAGNOSTIC", tabId });
+      if (res?.ok) {
+        okEl.textContent = `诊断完成（${res.id}），已存本机，在复盘页查看`;
+        okEl.style.display = "block";
+      } else {
+        errEl.textContent = res?.error || "诊断失败";
+        errEl.style.display = "block";
+      }
+    } catch (e) {
+      errEl.textContent = "通信失败: " + (e.message || "");
+      errEl.style.display = "block";
+    }
+    diagBtn.disabled = false;
+    diagBtn.textContent = "页面诊断";
+  });
+
   // 检查当前状态
   chrome.runtime.sendMessage({ type: "LISTEN_STATUS" }).then(res => {
     if (res?.active) {

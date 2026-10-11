@@ -55,6 +55,8 @@
   <aside>
     <h2>会话列表</h2>
     <div id="sessList"><div class="empty-tip">加载中…</div></div>
+    <h2 style="margin-top:16px">页面诊断 <span style="font-size:11px;color:#999;font-weight:normal">本机保存</span></h2>
+    <div id="diagList"><div class="empty-tip">暂无诊断报告</div></div>
   </aside>
   <main id="main">
     <div class="empty-tip">← 选择一场会话查看复盘</div>
@@ -194,6 +196,47 @@ async function deleteSession(sessionId) {
   }
 }
 
+// TASK-DOM-DIAGNOSTIC-001：诊断报告列表与详情
+async function loadDiags() {
+  try {
+    const r = await fetch("/api/diagnostics");
+    const data = await r.json();
+    const list = data.list || [];
+    if (!list.length) {
+      $("diagList").innerHTML = '<div class="empty-tip">暂无诊断报告</div>';
+      return;
+    }
+    $("diagList").innerHTML = list.map(d => `
+      <div class="sess" data-diag="${esc(d.id)}">
+        <div class="id">${esc(d.id)}</div>
+        <div class="meta">${esc(fmtTime(d.savedAt))} · 商品卡 ${d.productFound ? "✓" : "✗"} · 在线人数 ${d.onlineFound ? "✓" : "✗"}</div>
+      </div>`).join("");
+    document.querySelectorAll("[data-diag]").forEach(el => {
+      el.addEventListener("click", () => showDiagDetail(el.dataset.diag));
+    });
+  } catch (e) {
+    $("diagList").innerHTML = '<div class="empty-tip">加载失败</div>';
+  }
+}
+
+async function showDiagDetail(id) {
+  document.querySelectorAll(".sess").forEach(x => x.classList.remove("active"));
+  try {
+    const r = await fetch("/api/diagnostic?id=" + encodeURIComponent(id));
+    const data = await r.json();
+    const d = data.diagnostic || {};
+    const sec = (title, obj) => `
+      <div class="card"><h3>${title}</h3>
+      <pre style="white-space:pre-wrap;font-size:12px;background:#f7f7f7;padding:12px;border-radius:6px;overflow:auto">${esc(JSON.stringify(obj, null, 2))}</pre></div>`;
+    $("main").innerHTML = `
+      <div class="sessinfo">页面诊断 <span class="mono">${esc(id)}</span> · ${esc(fmtTime(d.savedAt))}</div>
+      ${sec("讲解商品卡", d.productCard || {})}
+      ${sec("在线人数", d.onlineCount || {})}`;
+  } catch (e) {
+    $("main").innerHTML = '<div class="empty-tip">诊断报告加载失败</div>';
+  }
+}
+
 async function loadDetail(sessionId) {
   $("main").innerHTML = '<div class="empty-tip">加载中…</div>';
   try {
@@ -273,6 +316,7 @@ async function loadDetail(sessionId) {
 }
 
 loadSessions();
+loadDiags();
 </script>
 </body>
 </html>

@@ -789,9 +789,87 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /diagnostic - 页面结构诊断结果（TASK-DOM-DIAGNOSTIC-001）
+  if (req.method === "POST" && req.url === "/diagnostic") {
+    try {
+      const body = await readJsonBody(req);
+      if (!body.diagnostic || typeof body.diagnostic !== "object") throw new Error("invalid diagnostic");
+      const id = saveDiagnostic(body.diagnostic);
+      console.log(`[Listener] 页面诊断已保存: ${id}`);
+      return sendJson(res, 200, { ok: true, id });
+    } catch (e) {
+      return sendJson(res, 400, { ok: false, error: safeError(e) });
+    }
+    return;
+  }
+
+  // GET /api/diagnostics - 诊断报告列表
+  if (req.method === "GET" && req.url === "/api/diagnostics") {
+    try {
+      return sendJson(res, 200, { ok: true, list: listDiagnostics() });
+    } catch (e) {
+      return sendJson(res, 400, { ok: false, error: safeError(e) });
+    }
+    return;
+  }
+
+  // GET /api/diagnostic?id= - 单份诊断报告详情
+  if (req.method === "GET" && req.url.startsWith("/api/diagnostic")) {
+    try {
+      const u = new URL(req.url, `http://${HOST}:${PORT}`);
+      const record = getDiagnostic(u.searchParams.get("id") || "");
+      return sendJson(res, 200, { ok: true, diagnostic: record });
+    } catch (e) {
+      return sendJson(res, 400, { ok: false, error: safeError(e) });
+    }
+    return;
+  }
+
   // 404
   return sendJson(res, 404, { error: "not found" });
 });
+
+// =============================================
+// 页面结构诊断（TASK-DOM-DIAGNOSTIC-001）
+// 只存本机 sessions/_diagnostic/（被 sessions/ 的 .gitignore 覆盖，不进 Git）。
+// 诊断内容本身已在 content/diag.js 脱敏：仅结构 + 截断文本，无 cookie/弹幕/私信。
+// =============================================
+
+function saveDiagnostic(diag) {
+  const dir = path.join(SESSIONS_DIR, "_diagnostic");
+  fs.mkdirSync(dir, { recursive: true });
+  const id = "diag_" + Date.now().toString(36);
+  const record = { id, savedAt: new Date().toISOString(), ...(diag || {}) };
+  fs.writeFileSync(path.join(dir, id + ".json"), JSON.stringify(record, null, 2));
+  return id;
+}
+
+function listDiagnostics() {
+  const dir = path.join(SESSIONS_DIR, "_diagnostic");
+  let files = [];
+  try {
+    files = fs.readdirSync(dir).filter(f => /^diag_[a-z0-9]+\.json$/.test(f)).sort().reverse();
+  } catch (e) { return []; }
+  return files.map(f => {
+    try {
+      const r = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8"));
+      return {
+        id: r.id,
+        savedAt: r.savedAt,
+        productFound: !!(r.productCard && r.productCard.found),
+        onlineFound: !!(r.onlineCount && r.onlineCount.found)
+      };
+    } catch (e) { return null; }
+  }).filter(Boolean);
+}
+
+function getDiagnostic(id) {
+  if (!/^diag_[a-z0-9]+$/.test(id)) throw new Error("invalid id");
+  const fp = path.resolve(SESSIONS_DIR, "_diagnostic", id + ".json");
+  const dir = path.resolve(SESSIONS_DIR, "_diagnostic");
+  if (!fp.startsWith(dir + path.sep)) throw new Error("invalid id");
+  return JSON.parse(fs.readFileSync(fp, "utf-8"));
+}
 
 // =============================================
 // 工具函数

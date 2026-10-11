@@ -38,6 +38,7 @@
       "js": [
         "content/metrics_parse.js",
         "content/product_parse.js",
+        "content/diag.js",
         "content/content.js"
       ],
       "run_at": "document_end"

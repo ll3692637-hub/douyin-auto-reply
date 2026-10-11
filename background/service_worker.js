@@ -259,6 +259,39 @@ function stopProductTimer() {
 }
 
 // =============================================
+// 页面结构诊断（TASK-DOM-DIAGNOSTIC-001）
+// 用户在直播页点击"页面诊断"后，仅在当前已授权直播标签页执行一次；
+// 结果 POST 到本机服务存 sessions/_diagnostic/（不进 Git），供复盘页展示。
+// =============================================
+
+async function runPageDiagnostic(tabId) {
+  let tab = null;
+  try { tab = await chrome.tabs.get(tabId); } catch (e) {}
+  if (!tab || !tab.url || !tab.url.includes("live.douyin.com")) {
+    return { ok: false, error: "not_live_tab" };
+  }
+  let r = null;
+  try {
+    r = await chrome.tabs.sendMessage(tabId, { type: "RUN_DIAGNOSTIC" });
+  } catch (e) {
+    return { ok: false, error: "content_not_ready" };
+  }
+  if (!r || !r.ok) return { ok: false, error: (r && r.error) || "diagnostic_failed" };
+  try {
+    const resp = await fetch(`${LISTEN_LOCAL_SERVER}/diagnostic`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ diagnostic: r.diagnostic })
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.ok) throw new Error(data.error || ("server " + resp.status));
+    return { ok: true, id: data.id };
+  } catch (e) {
+    return { ok: false, error: "save_failed: " + safeErr(e) };
+  }
+}
+
+// =============================================
 // 账号名单同步（TASK-DANMAKU-001）
 // 名单源头在本地服务的 accounts.json；Service Worker 在发送决策前必须能读到，
 // 因此启动/开播时从本机服务拉取并缓存到 chrome.storage.local。
@@ -444,6 +477,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       duration: listenState.active ? Date.now() - listenState.startTime : 0,
       lastError: listenState.lastError
     })).catch(() => sendResponse({ active: false }));
+    return true;
+  }
+  // TASK-DOM-DIAGNOSTIC-001：页面诊断（只在当前已授权直播标签页执行）
+  if (message.type === "RUN_DIAGNOSTIC") {
+    runPageDiagnostic(message.tabId)
+      .then(r => { try { sendResponse(r); } catch(e){} })
+      .catch(e => { try { sendResponse({ ok: false, error: safeErr(e) }); } catch(_){} });
     return true;
   }
   if (message.type === "OFFSCREEN_CHUNK_SENT") {

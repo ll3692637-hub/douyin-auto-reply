@@ -629,6 +629,14 @@ console.log("[🎯抖音] Content Script v4 已加载");
         sendResponse({ product: null, matchedSelector: null, debugHint: null });
       }
     }
+    // TASK-DOM-DIAGNOSTIC-001：页面结构诊断（只读目标容器结构与截断文本，不碰隐私数据）
+    if (msg.type === "RUN_DIAGNOSTIC") {
+      try {
+        sendResponse({ ok: true, diagnostic: runPageDiagnostic() });
+      } catch (e) {
+        sendResponse({ ok: false, error: String((e && e.message) || e) });
+      }
+    }
   });
 
   // =============================================
