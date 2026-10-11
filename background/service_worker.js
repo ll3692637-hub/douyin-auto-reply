@@ -36,6 +36,129 @@ function persistListenState() {
 }
 
 // =============================================
+// 画面/趋势采样（TASK-VISUAL-TREND-001）
+// 监听激活期间：启动立即采一张，之后每 45 秒采一次。
+// VISUAL_INTERVAL_MS 为配置位置；截图压缩到约 1280x720 JPEG q0.7。
+// =============================================
+
+const VISUAL_INTERVAL_MS = 45000;
+const VISUAL_FRAME_MAX_W = 1280;
+const VISUAL_FRAME_MAX_H = 720;
+const VISUAL_JPEG_QUALITY = 0.7;
+
+let visualTimer = null;
+let visualSeq = 0;
+let visualSampling = false; // 执行锁：上一轮未结束不启动下一轮
+
+/**
+ * dataUrl(JPEG) → 压缩到 maxW×maxH 以内 → JPEG q0.7 → Uint8Array
+ */
+async function downscaleJpeg(dataUrl, maxW, maxH, quality) {
+  const blob = await (await fetch(dataUrl)).blob();
+  const bitmap = await createImageBitmap(blob);
+  const scale = Math.min(1, maxW / bitmap.width, maxH / bitmap.height);
+  const w = Math.max(1, Math.round(bitmap.width * scale));
+  const h = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = new OffscreenCanvas(w, h);
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, w, h);
+  bitmap.close();
+  const out = await canvas.convertToBlob({ type: "image/jpeg", quality });
+  return new Uint8Array(await out.arrayBuffer());
+}
+
+function bufToBase64(u8) {
+  let s = "";
+  const CH = 0x8000;
+  for (let i = 0; i < u8.length; i += CH) {
+    s += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
+  }
+  return btoa(s);
+}
+
+async function sampleVisual() {
+  if (!listenState.active) return;
+  // 执行锁：上一轮没结束时跳过本轮，不补采、不并发（时间线不乱序）
+  if (visualSampling) {
+    console.warn("[Listen] 上一轮画面采样未结束，跳过本轮");
+    return;
+  }
+  visualSampling = true;
+  try {
+    const tabId = listenState.tabId;
+    const sessionId = listenState.sessionId;
+    if (!tabId || !sessionId) return;
+    const offsetMs = Date.now() - listenState.startTime;
+
+    // Codex 评审要求：必须确认是当前活动直播页，否则绝不能截图
+    let tab = null;
+    try { tab = await chrome.tabs.get(tabId); } catch (e) {}
+    const isLiveTab = !!(tab && tab.active && tab.url && tab.url.includes("live.douyin.com"));
+
+    // 趋势指标（失败则全 null，不影响截图）
+    let metrics = { online: null, enter: null, leave: null };
+    let rawMetrics = { online: null, enter: null, leave: null };
+    let matchedSelector = null;
+    if (isLiveTab) {
+      try {
+        const r = await chrome.tabs.sendMessage(tabId, { type: "GET_VISUAL_METRICS" });
+        if (r) {
+          metrics = r.metrics || metrics;
+          rawMetrics = r.rawMetrics || rawMetrics;
+          matchedSelector = r.matchedSelector || null;
+        }
+      } catch (e) { /* 趋势读取失败，指标保持 null */ }
+    }
+
+    // 截图（仅活动直播页；失败则 framePath 为 null）
+    let frameBase64 = null;
+    let frameError = null;
+    if (isLiveTab) {
+      try {
+        const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 70 });
+        const jpeg = await downscaleJpeg(dataUrl, VISUAL_FRAME_MAX_W, VISUAL_FRAME_MAX_H, VISUAL_JPEG_QUALITY);
+        frameBase64 = bufToBase64(jpeg);
+      } catch (e) {
+        frameError = "capture_failed: " + safeErr(e);
+      }
+    } else {
+      frameError = "tab_not_active";
+    }
+
+    // 上报本机服务（截图与指标同一次采样动作、同一 offsetMs）
+    visualSeq++;
+    try {
+      await fetch(`${LISTEN_LOCAL_SERVER}/visual`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId, sequence: visualSeq, offsetMs, timestamp: Date.now(),
+          metrics, rawMetrics, matchedSelector,
+          frameData: frameBase64, frameError
+        })
+      });
+    } catch (e) {
+      console.warn("[Listen] 画面快照上报失败:", safeErr(e));
+    }
+  } finally {
+    visualSampling = false;
+  }
+}
+
+function startVisualTimer() {
+  stopVisualTimer();
+  visualSeq = 0;
+  sampleVisual().catch(() => {}); // 启动立即采一张
+  visualTimer = setInterval(() => { sampleVisual().catch(() => {}); }, VISUAL_INTERVAL_MS);
+}
+
+function stopVisualTimer() {
+  if (visualTimer) {
+    clearInterval(visualTimer);
+    visualTimer = null;
+  }
+}
+
+// =============================================
 // 账号名单同步（TASK-DANMAKU-001）
 // 名单源头在本地服务的 accounts.json；Service Worker 在发送决策前必须能读到，
 // 因此启动/开播时从本机服务拉取并缓存到 chrome.storage.local。
@@ -549,6 +672,9 @@ async function startListening(tabId, opts) {
   };
   await persistListenState();
 
+  // TASK-VISUAL-TREND-001：启动画面/趋势采样（立即一张 + 每 45 秒）
+  startVisualTimer();
+
   console.log("[Listen] 监听已启动, sessionId:", sessionId, "tabId:", tabId);
   return { ok: true, sessionId };
 }
@@ -557,6 +683,12 @@ async function stopListening() {
   await ensureListenState();
   if (!listenState.active) {
     return { ok: true, wasActive: false };
+  }
+
+  // TASK-VISUAL-TREND-001：立即停止画面/趋势定时器，不得残留
+  if (visualTimer) {
+    clearInterval(visualTimer);
+    visualTimer = null;
   }
 
   // 停止 offscreen 采集

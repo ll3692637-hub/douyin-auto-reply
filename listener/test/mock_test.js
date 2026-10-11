@@ -155,6 +155,84 @@ async function run() {
   assert.equal(washed.replacements.length, 2);
   assert.equal(washText("原文无错别字", []).text, "原文无错别字");
 
+  // TASK-VISUAL-TREND-001：parseOnlineText 单元测试（vm 加载 content/metrics_parse.js，保证与浏览器端同一份逻辑）
+  const visualDir = path.join(dataDir, "sessions", sessionId); // sessionDir 在后文定义，此处用局部变量
+  const vm = require("vm");
+  const metricsCtx = {};
+  vm.createContext(metricsCtx);
+  vm.runInContext(
+    fs.readFileSync(path.join(__dirname, "..", "..", "content", "metrics_parse.js"), "utf8"),
+    metricsCtx
+  );
+  const parseOnlineText = metricsCtx.parseOnlineText;
+  assert.equal(parseOnlineText("1.2万人在看").value, 12000);
+  assert.equal(parseOnlineText("1.2万人在看").raw, "1.2万人在看");
+  assert.equal(parseOnlineText("860人").value, 860);
+  assert.equal(parseOnlineText("2.5万").value, 25000);
+  assert.strictEqual(parseOnlineText("今天很开心"), null);
+  assert.strictEqual(parseOnlineText(""), null);
+
+  // POST /visual：带图快照
+  const fakeJpeg = Buffer.concat([Buffer.from([0xFF, 0xD8, 0xFF, 0xE0]), Buffer.alloc(1000), Buffer.from([0xFF, 0xD9])]);
+  result = await request("POST", "/visual", {
+    sessionId, sequence: 1, offsetMs: 45000, timestamp: Date.now(),
+    metrics: { online: 120, enter: null, leave: null },
+    rawMetrics: { online: "1.2万人在看", enter: null, leave: null },
+    matchedSelector: "text-pattern:人在看",
+    frameData: fakeJpeg.toString("base64"), frameError: null
+  });
+  assert.equal(result.status, 200);
+  assert.ok(JSON.parse(result.body).framePath);
+  const vLines = fs.readFileSync(path.join(visualDir, "visual.jsonl"), "utf8").trim().split("\n");
+  const vEntry = JSON.parse(vLines[0]);
+  assert.equal(vEntry.metrics.online, 120);
+  assert.equal(vEntry.rawMetrics.online, "1.2万人在看");
+  assert.ok(fs.existsSync(path.join(visualDir, vEntry.framePath)));
+
+  // POST /visual：无图快照（截图失败仍写快照）
+  result = await request("POST", "/visual", {
+    sessionId, sequence: 2, offsetMs: 90000, timestamp: Date.now(),
+    metrics: { online: null, enter: null, leave: null },
+    rawMetrics: { online: null, enter: null, leave: null },
+    matchedSelector: null, frameData: null, frameError: "tab_not_active"
+  });
+  assert.equal(result.status, 200);
+  assert.strictEqual(JSON.parse(result.body).framePath, null);
+
+  // /visual 参数校验
+  result = await request("POST", "/visual", { sessionId: "../../bad", sequence: 1, offsetMs: 1 });
+  assert.equal(result.status, 400);
+  result = await request("POST", "/visual", { sessionId, sequence: 1, offsetMs: -5 });
+  assert.equal(result.status, 400);
+  result = await request("POST", "/visual", {
+    sessionId, sequence: 3, offsetMs: 135000,
+    frameData: Buffer.from([0x00, 0x01, 0x02]).toString("base64") // 非 JPEG 魔数
+  });
+  assert.equal(result.status, 400);
+
+  // GET /api/frame：正常与穿越
+  const frameFile = vEntry.framePath.split("/").pop();
+  result = await request("GET", `/api/frame?sessionId=${sessionId}&file=${frameFile}`);
+  assert.equal(result.status, 200);
+  result = await request("GET", `/api/frame?sessionId=${sessionId}&file=${encodeURIComponent("../../x.jpg")}`);
+  assert.equal(result.status, 400);
+  result = await request("GET", `/api/frame?sessionId=${sessionId}&file=nope.png`);
+  assert.equal(result.status, 400);
+
+  // 会话详情时间轴包含 visual
+  result = await request("GET", "/api/session?id=" + encodeURIComponent(sessionId));
+  const detail2 = JSON.parse(result.body);
+  assert.ok(detail2.timeline.some(x => x.kind === "visual"));
+  assert.equal(detail2.visualCount, 2);
+
+  // POST /session/delete：连带删除截图与 visual.jsonl，其他会话不受影响
+  result = await request("POST", "/session/delete", { sessionId: sessionId3 });
+  assert.equal(result.status, 200);
+  assert.ok(!fs.existsSync(path.join(dataDir, "sessions", sessionId3)));
+  assert.ok(fs.existsSync(path.join(dataDir, "sessions", sessionId)));
+  result = await request("POST", "/session/delete", { sessionId: "../../bad" });
+  assert.equal(result.status, 400);
+
   result = await request("POST", "/session/start", { sessionId: "../../bad" });
   assert.equal(result.status, 400);
 

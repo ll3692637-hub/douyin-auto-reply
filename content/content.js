@@ -612,6 +612,15 @@ console.log("[🎯抖音] Content Script v4 已加载");
         scanCount: scanCount
       });
     }
+    // TASK-VISUAL-TREND-001：供 SW 采样趋势指标（在线人数等）
+    if (msg.type === "GET_VISUAL_METRICS") {
+      try {
+        sendResponse(readVisualMetrics(document));
+      } catch (e) {
+        sendResponse({ metrics: { online: null, enter: null, leave: null },
+          rawMetrics: { online: null, enter: null, leave: null }, matchedSelector: null });
+      }
+    }
   });
 
   // =============================================

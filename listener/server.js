@@ -15,6 +15,8 @@ const PORT = Number(process.env.LISTENER_PORT || 17842);
 const HOST = "127.0.0.1";
 const MAX_JSON_BYTES = 64 * 1024;
 const MAX_AUDIO_BYTES = 3 * 1024 * 1024; // 腾讯云一句话识别本地音频上限 3MB
+const MAX_VISUAL_BYTES = 2 * 1024 * 1024; // /visual 请求上限（含 base64 截图）
+const MAX_FRAME_BYTES = 1536 * 1024; // 单张截图上限 1.5MB（1280x720 q0.7 约 80-150KB）
 
 // 路径常量
 const APP_SUPPORT = process.env.LISTENER_DATA_DIR
@@ -360,6 +362,7 @@ function createSession(sessionId, meta) {
   // 创建空文件
   fs.writeFileSync(path.join(sessionDir, "danmaku.jsonl"), "");
   fs.writeFileSync(path.join(sessionDir, "transcript.jsonl"), "");
+  fs.writeFileSync(path.join(sessionDir, "visual.jsonl"), "");
 
   activeSessions.set(sessionId, { dir: sessionDir, info: sessionInfo });
   return activeSessions.get(sessionId);
@@ -396,6 +399,16 @@ function appendTranscript(sessionId, entry) {
   const line = JSON.stringify(entry) + "\n";
   fs.appendFileSync(path.join(session.dir, "transcript.jsonl"), line);
   session.info.transcriptCount++;
+  persistSession(session);
+}
+
+// TASK-VISUAL-TREND-001：画面/趋势快照追加
+function appendVisual(sessionId, entry) {
+  const session = getSession(sessionId);
+  if (!session) return;
+  const line = JSON.stringify(entry) + "\n";
+  fs.appendFileSync(path.join(session.dir, "visual.jsonl"), line);
+  session.info.visualCount = (session.info.visualCount || 0) + 1;
   persistSession(session);
 }
 
@@ -639,6 +652,85 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /visual - 画面/趋势快照（TASK-VISUAL-TREND-001）
+  // JSON body：{ sessionId, sequence, offsetMs, timestamp, metrics, rawMetrics,
+  //             matchedSelector, frameData(base64 JPEG，可空), frameError }
+  if (req.method === "POST" && req.url === "/visual") {
+    try {
+      const body = await readRawBody(req, MAX_VISUAL_BYTES).then(raw => JSON.parse(raw.toString("utf-8")));
+      const { sessionId, sequence, offsetMs } = body;
+      assertSessionId(sessionId);
+      if (!Number.isInteger(sequence) || sequence < 1) throw new Error("invalid sequence");
+      if (!Number.isInteger(offsetMs) || offsetMs < 0 || offsetMs > 12 * 3600 * 1000) throw new Error("invalid offsetMs");
+      const session = getSession(sessionId);
+      if (!session) throw new Error("unknown session");
+
+      let framePath = null;
+      if (body.frameData) {
+        const buf = Buffer.from(body.frameData, "base64");
+        if (buf.length === 0 || buf.length > MAX_FRAME_BYTES) throw new Error("frame too large");
+        if (buf[0] !== 0xFF || buf[1] !== 0xD8) throw new Error("invalid jpeg"); // JPEG 魔数校验
+        const framesDir = path.join(session.dir, "frames");
+        fs.mkdirSync(framesDir, { recursive: true });
+        const fileName = `${offsetMs}_${sequence}.jpg`;
+        fs.writeFileSync(path.join(framesDir, fileName), buf);
+        framePath = `frames/${fileName}`;
+      }
+
+      appendVisual(sessionId, {
+        timestamp: new Date(body.timestamp || Date.now()).toISOString(),
+        offsetMs,
+        sequence,
+        framePath,
+        frameError: body.frameError || null,
+        metrics: body.metrics || { online: null, enter: null, leave: null },
+        rawMetrics: body.rawMetrics || { online: null, enter: null, leave: null },
+        matchedSelector: body.matchedSelector || null
+      });
+      return sendJson(res, 200, { ok: true, sequence, framePath });
+    } catch (e) {
+      console.error("[Listener] 画面快照错误:", safeError(e));
+      return sendJson(res, 400, { ok: false, error: safeError(e) });
+    }
+    return;
+  }
+
+  // GET /api/frame?sessionId=&file= - 画面文件（白名单校验，防穿越）
+  if (req.method === "GET" && req.url.startsWith("/api/frame")) {
+    try {
+      const u = new URL(req.url, `http://${HOST}:${PORT}`);
+      const sessionId = u.searchParams.get("sessionId") || "";
+      const file = u.searchParams.get("file") || "";
+      assertSessionId(sessionId);
+      if (!/^\d+_\d+\.jpg$/.test(file)) throw new Error("invalid file");
+      const framesDir = path.resolve(SESSIONS_DIR, sessionId, "frames");
+      const resolved = path.resolve(framesDir, file);
+      if (!resolved.startsWith(framesDir + path.sep)) throw new Error("invalid file");
+      const data = fs.readFileSync(resolved);
+      res.writeHead(200, { "Content-Type": "image/jpeg" });
+      return res.end(data);
+    } catch (e) {
+      const code = /invalid|ENOENT/.test(e.message) ? (e.message === "invalid file" || e.message === "invalid sessionId" ? 400 : 404) : 400;
+      return sendJson(res, code, { ok: false, error: safeError(e) });
+    }
+    return;
+  }
+
+  // POST /session/delete - 删除会话（含截图与 visual.jsonl，AC-VT-07）
+  if (req.method === "POST" && req.url === "/session/delete") {
+    try {
+      const body = await readJsonBody(req);
+      assertSessionId(body.sessionId);
+      activeSessions.delete(body.sessionId);
+      fs.rmSync(path.join(SESSIONS_DIR, body.sessionId), { recursive: true, force: true });
+      console.log(`[Listener] 会话已删除: ${body.sessionId}`);
+      return sendJson(res, 200, { ok: true });
+    } catch (e) {
+      return sendJson(res, 400, { ok: false, error: safeError(e) });
+    }
+    return;
+  }
+
   // 404
   return sendJson(res, 404, { error: "not found" });
 });
@@ -699,6 +791,7 @@ function listSessions() {
         danmakuCount: info.danmakuCount || 0,
         transcriptCount: info.transcriptCount || 0,
         audioChunks: info.audioChunks || 0,
+        visualCount: info.visualCount || 0,
         profileId: (info.profileSnapshot && info.profileSnapshot.profileId) || "general",
         profileName: (info.profileSnapshot && info.profileSnapshot.profileName) || "通用"
       });
@@ -714,12 +807,14 @@ function getSessionDetail(sessionId) {
   const info = JSON.parse(fs.readFileSync(path.join(dir, "session.json"), "utf-8"));
   const transcript = readJsonLines(path.join(dir, "transcript.jsonl"));
   const danmaku = readJsonLines(path.join(dir, "danmaku.jsonl"));
+  const visual = readJsonLines(path.join(dir, "visual.jsonl"));
   // 合并时间轴：按 offsetMs 排序；缺失 offsetMs 的按 timestamp 兜底
   const timeline = [
     ...transcript.map(t => ({ kind: "transcript", at: t.offsetMs != null ? t.offsetMs : 0, data: t })),
-    ...danmaku.map(d => ({ kind: "danmaku", at: d.offsetMs != null ? d.offsetMs : 0, data: d }))
+    ...danmaku.map(d => ({ kind: "danmaku", at: d.offsetMs != null ? d.offsetMs : 0, data: d })),
+    ...visual.map(v => ({ kind: "visual", at: v.offsetMs != null ? v.offsetMs : 0, data: v }))
   ].sort((a, b) => a.at - b.at);
-  return { info, timeline, transcriptCount: transcript.length, danmakuCount: danmaku.length };
+  return { info, timeline, transcriptCount: transcript.length, danmakuCount: danmaku.length, visualCount: visual.length };
 }
 
 function readJsonBody(req) {

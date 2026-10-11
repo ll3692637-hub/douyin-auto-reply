@@ -85,11 +85,14 @@ async function loadSessions() {
     if (!list.length) { $("sessList").innerHTML = '<div class="empty-tip">暂无会话</div>'; return; }
     $("sessList").innerHTML = list.map(s => `
       <div class="sess" data-id="${esc(s.sessionId)}">
-        <div class="id">${!s.endTime ? '<span class="live-dot"></span>' : ""}${esc(s.sessionId.slice(0, 24))}…</div>
-        <div class="meta">${esc(fmtTime(s.startTime))} · 转写 ${s.transcriptCount} · 弹幕 ${s.danmakuCount}<br>档案：${esc(s.profileName)}</div>
+        <div class="id">${!s.endTime ? '<span class="live-dot"></span>' : ""}${esc(s.sessionId.slice(0, 24))}…
+          <span class="sess-del" data-del="${esc(s.sessionId)}" title="删除会话"
+            style="float:right;color:#ccc;cursor:pointer;font-size:14px">✕</span></div>
+        <div class="meta">${esc(fmtTime(s.startTime))} · 转写 ${s.transcriptCount} · 弹幕 ${s.danmakuCount} · 画面 ${s.visualCount || 0}<br>档案：${esc(s.profileName)}</div>
       </div>`).join("");
     document.querySelectorAll(".sess").forEach(el => {
-      el.addEventListener("click", () => {
+      el.addEventListener("click", (ev) => {
+        if (ev.target.dataset.del) { deleteSession(ev.target.dataset.del); return; }
         document.querySelectorAll(".sess").forEach(x => x.classList.remove("active"));
         el.classList.add("active");
         loadDetail(el.dataset.id);
@@ -122,6 +125,58 @@ function renderDanmaku(d) {
     <div class="dm-text">${esc(d.text)}</div></div>`;
 }
 
+// TASK-VISUAL-TREND-001：画面/趋势条目
+// netChange 由调用方传入（相对上一快照的在线显示净变化），null 则不显示
+function renderVisual(v, sessionId, netChange) {
+  const file = v.framePath ? v.framePath.split("/").pop() : null;
+  const img = file
+    ? `<img src="/api/frame?sessionId=${encodeURIComponent(sessionId)}&file=${encodeURIComponent(file)}"
+         loading="lazy" style="max-width:280px;border-radius:6px;border:1px solid #eee" alt="画面截图">`
+    : `<span class="nodata">无截图${v.frameError ? "（" + esc(v.frameError) + "）" : ""}</span>`;
+  const m = v.metrics || {};
+  const rm = v.rawMetrics || {};
+  let metricLine = "";
+  if (m.online != null) {
+    metricLine = `在线 <b>${m.online}</b>`;
+    if (netChange != null) {
+      const sign = netChange > 0 ? "+" : "";
+      metricLine += `（较上次 ${sign}${netChange}）`;
+    }
+    if (rm.online) metricLine += ` <span style="color:#999;font-size:12px">页面原文：${esc(rm.online)}</span>`;
+  } else {
+    metricLine = `<span class="nodata">在线数：暂无数据${rm.online ? "（原文：" + esc(rm.online) + "）" : ""}</span>`;
+  }
+  return `<div class="t">${fmtMs(v.offsetMs)}</div><div class="body">
+    ${img}<div style="margin-top:6px;font-size:13px">${metricLine}</div></div>`;
+}
+
+// 时间轴统一渲染入口
+function renderItem(x, sessionId) {
+  if (x.kind === "transcript") return renderTranscript(x.data);
+  if (x.kind === "danmaku") return renderDanmaku(x.data);
+  if (x.kind === "visual") return renderVisual(x.data, sessionId, x._delta);
+  return "";
+}
+
+async function deleteSession(sessionId) {
+  if (!confirm(`删除会话 ${sessionId} 的全部数据（含截图）？此操作不可恢复。`)) return;
+  try {
+    const r = await fetch("/session/delete", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId })
+    });
+    const data = await r.json();
+    if (data.ok) {
+      $("main").innerHTML = '<div class="empty-tip">← 选择一场会话查看复盘</div>';
+      loadSessions();
+    } else {
+      alert("删除失败：" + (data.error || "未知错误"));
+    }
+  } catch (e) {
+    alert("删除失败：" + e.message);
+  }
+}
+
 async function loadDetail(sessionId) {
   $("main").innerHTML = '<div class="empty-tip">加载中…</div>';
   try {
@@ -133,7 +188,19 @@ async function loadDetail(sessionId) {
     const dur = info.endTime && info.startTime
       ? Math.round((info.endTime - info.startTime) / 1000) + "s" : "进行中";
     const tl = (data.timeline || []).filter(x =>
-      showKind === "all" || (showKind === "transcript" ? x.kind === "transcript" : x.kind === "danmaku"));
+      showKind === "all" || x.kind === showKind);
+
+    // 在线显示净变化：相对上一条有数值的快照（Codex 评审：只展示差值，不做因果/进出推断）
+    let lastOnline = null;
+    const tlWithDelta = tl.map(x => {
+      let delta = null;
+      if (x.kind === "visual") {
+        const cur = x.data && x.data.metrics ? x.data.metrics.online : null;
+        if (cur != null && lastOnline != null) delta = cur - lastOnline;
+        if (cur != null) lastOnline = cur;
+      }
+      return { ...x, _delta: delta };
+    });
 
     $("main").innerHTML = `
       <div class="card">
@@ -150,8 +217,17 @@ async function loadDetail(sessionId) {
           ? `<div style="margin-top:8px;font-size:12px;color:#666">本场关键词：${esc(snap.sessionKeywords.join("，"))}</div>` : ""}
       </div>
       <div class="card">
-        <h3>流量 / 成交 / 画面</h3>
+        <h3>流量 / 成交</h3>
         <div class="nodata">暂无数据（对应采集任务尚未实现）</div>
+      </div>
+      <div class="card">
+        <h3>画面 / 趋势 <span style="font-size:11px;color:#999;font-weight:normal">约45秒/张（首张为启动时立即采样）</span></h3>
+        <div id="tlVisual">
+          ${tlWithDelta.filter(x => x.kind === "visual").length
+            ? tlWithDelta.filter(x => x.kind === "visual").map(x =>
+              `<div class="tl-item">${renderVisual(x.data, sessionId, x._delta)}</div>`).join("")
+            : '<div class="nodata">暂无数据</div>'}
+        </div>
       </div>
       <div class="card">
         <div class="toolbar">
@@ -161,11 +237,12 @@ async function loadDetail(sessionId) {
             <option value="all">全部</option>
             <option value="transcript">只看转写</option>
             <option value="danmaku">只看弹幕</option>
+            <option value="visual">只看画面</option>
           </select>
           <span style="font-size:12px;color:#999">${tl.length} 条</span>
         </div>
         <div id="tl">
-          ${tl.length ? tl.map(x => `<div class="tl-item">${x.kind === "transcript" ? renderTranscript(x.data) : renderDanmaku(x.data)}</div>`).join("")
+          ${tl.length ? tlWithDelta.map(x => `<div class="tl-item">${renderItem(x, sessionId)}</div>`).join("")
             : '<div class="nodata">暂无转写与弹幕</div>'}
         </div>
       </div>`;

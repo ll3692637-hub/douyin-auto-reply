@@ -22,27 +22,44 @@
   },
   "content_scripts": [
     {
-      "matches": ["*://live.douyin.com/*"],
-      "js": ["content/ws-patch.js"],
+      "matches": [
+        "*://live.douyin.com/*"
+      ],
+      "js": [
+        "content/ws-patch.js"
+      ],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
-      "matches": ["*://live.douyin.com/*"],
-      "js": ["content/content.js"],
+      "matches": [
+        "*://live.douyin.com/*"
+      ],
+      "js": [
+        "content/metrics_parse.js",
+        "content/content.js"
+      ],
       "run_at": "document_end"
     },
     {
-      "matches": ["*://channels.weixin.qq.com/*"],
-      "js": ["content/content_channels.js"],
+      "matches": [
+        "*://channels.weixin.qq.com/*"
+      ],
+      "js": [
+        "content/content_channels.js"
+      ],
       "run_at": "document_end"
     }
   ],
   "options_page": "options/options.html",
   "web_accessible_resources": [
     {
-      "resources": ["options/diagnose.html"],
-      "matches": ["<all_urls>"]
+      "resources": [
+        "options/diagnose.html"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ],
   "permissions": [
@@ -51,7 +68,8 @@
     "scripting",
     "notifications",
     "tabCapture",
-    "offscreen"
+    "offscreen",
+    "activeTab"
   ],
   "host_permissions": [
     "*://live.douyin.com/*",
