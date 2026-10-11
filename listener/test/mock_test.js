@@ -257,6 +257,29 @@ async function run() {
   const pr5 = parseProductCard(fakeCardDoc(cardEl("讲解中\n羊毛披肩\n到手价待公布")));
   assert.equal(pr5.product.priceText, "到手价待公布");
   assert.strictEqual(pr5.product.price, null);
+  // 券后价前缀保留进 priceText
+  const ep3 = extractPrice("券后价¥149");
+  assert.equal(ep3.priceText, "券后价¥149");
+  assert.equal(ep3.price, "149");
+  // parseProductCard：讲解中图片锚点（2026-10-11 实机 DOM 结构）
+  const priceDiv = { innerText: "券后价¥149", parentElement: null, querySelector: () => null };
+  const cardRoot = {
+    innerText: "【羊绒中方巾】枳实原创100%山羊绒方巾小众时尚穿搭保暖巾\n券后价¥149\n抢",
+    parentElement: null,
+    querySelector: () => null
+  };
+  priceDiv.parentElement = cardRoot;
+  const badge = { parentElement: priceDiv };
+  const pr6 = parseProductCard({
+    querySelector: (sel) => (sel.includes("jiangjiezhong") ? badge : null),
+    querySelectorAll: () => []
+  });
+  assert.equal(pr6.product.name, "【羊绒中方巾】枳实原创100%山羊绒方巾小众时尚穿搭保暖巾");
+  assert.equal(pr6.product.priceText, "券后价¥149");
+  assert.equal(pr6.product.price, "149");
+  assert.equal(pr6.matchedSelector, 'img[src*="jiangjiezhong"]');
+  assert.equal(productKey(pr6.product),
+    "np:【羊绒中方巾】枳实原创100%山羊绒方巾小众时尚穿搭保暖巾|149");
   // 价格状态补丁：同卡 ¥199 与 ??3元 共存时锁价优先
   const ep1 = extractPrice("桑蚕丝围巾 ¥199 ??3元 去购买");
   assert.equal(ep1.priceText, "??3元");
