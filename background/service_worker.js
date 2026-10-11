@@ -166,7 +166,8 @@ function stopVisualTimer() {
 // 节点判定：decideProductNode 的权威定义在 content/product_parse.js，
 // 此处为 SW 侧精简复刻（content script 上下文不可用），修改时保持一致。
 // - key 变化 → product_switch（重置该商品价格状态）
-// - key 相同但 priceText 变化 → price_update（锁价→实价）
+// - key 相同且读到新的非空 priceText → price_update（锁价→实价）
+// - 价格暂时读不到 → 不更新状态、不产生空价格节点
 // =============================================
 
 const PRODUCT_POLL_MS = 30000;
@@ -183,6 +184,7 @@ function swProductKey(p) {
 function swDecideProductNode(lastKey, lastPriceText, key, priceText) {
   if (!key) return null;
   if (key !== lastKey) return "product_switch";
+  if (!priceText) return null;
   if ((priceText || null) !== (lastPriceText || null)) return "price_update";
   return null;
 }

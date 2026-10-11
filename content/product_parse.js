@@ -138,12 +138,15 @@ function shouldRecordSwitch(lastKey, key) {
  * 给定上次 (lastKey, lastPriceText) 与本次 (key, priceText)，
  * 返回 "product_switch" | "price_update" | null（无变化/标识不可靠）
  * - key 变化 → product_switch（并重置该商品的价格状态）
- * - key 相同但 priceText 变化 → price_update（如锁价 ??3元 → 实价 ¥199）
+ * - key 相同且读到新的非空 priceText → price_update（如锁价 ??3元 → 实价 ¥199）
+ * - key 相同但本轮价格暂时读不到 → null（保留上次价格状态，避免 DOM 闪动制造噪声）
  * - key 相同且 priceText 相同 → null
  */
 function decideProductNode(lastKey, lastPriceText, key, priceText) {
   if (!key) return null;
   if (key !== lastKey) return "product_switch";
+  // 商品卡在切换动画或页面重绘中可能暂时不含价格；这不是价格更新。
+  if (!priceText) return null;
   if ((priceText || null) !== (lastPriceText || null)) return "price_update";
   return null;
 }

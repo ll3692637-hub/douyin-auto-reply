@@ -275,6 +275,9 @@ async function run() {
     ["product_switch", "product_switch", "product_switch"]);
   assert.deepEqual(seq([["id:1", "??3元"], ["id:2", "??8元"], ["id:1", "¥199"], ["id:1", "¥199"]]),
     ["product_switch", "product_switch", "product_switch", null]); // 切回 A 已在换品节点记下 ¥199
+  // 价格节点暂时从 DOM 消失不是价格更新；恢复原价也不应重复记录。
+  assert.deepEqual(seq([["id:1", "¥199"], ["id:1", null], ["id:1", "¥199"]]),
+    ["product_switch", null, null]);
   // 标识不可靠 / 无变化 → null
   assert.strictEqual(decideProductNode("id:1", "??3元", null, "??3元"), null);
   assert.strictEqual(decideProductNode(null, null, null, null), null);
