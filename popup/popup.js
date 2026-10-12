@@ -252,8 +252,10 @@ function initListenUI(isDouyin, tabId) {
     try {
       const res = await chrome.runtime.sendMessage({ type: "LISTEN_START", tabId, profileId, sessionKeywords });
       if (res?.ok) {
-        updateListenUI(true);
+        setListenState("listening", { profileName: document.getElementById("listenProfile")?.selectedOptions?.[0]?.textContent || "" });
         startPollListenStatus();
+      } else if (res?.error === "local_service_offline") {
+        setListenState("offline");
       } else {
         const errEl = document.getElementById("listenError");
         errEl.textContent = res?.hint || res?.error || "启动失败";
@@ -262,11 +264,8 @@ function initListenUI(isDouyin, tabId) {
         startBtn.textContent = "开始监听";
       }
     } catch (e) {
-      const errEl = document.getElementById("listenError");
-      errEl.textContent = "通信失败: " + (e.message || "");
-      errEl.style.display = "block";
-      startBtn.disabled = false;
-      startBtn.textContent = "开始监听";
+      // 与 SW 通信失败 → 本地服务未启动
+      setListenState("offline");
     }
   });
 
@@ -276,7 +275,7 @@ function initListenUI(isDouyin, tabId) {
     try {
       await chrome.runtime.sendMessage({ type: "LISTEN_STOP" });
     } catch (e) {}
-    updateListenUI(false);
+    setListenState("idle");
     stopPollListenStatus();
     stopBtn.disabled = false;
     stopBtn.textContent = "停止监听";
@@ -308,41 +307,91 @@ function initListenUI(isDouyin, tabId) {
     diagBtn.textContent = "页面诊断";
   });
 
-  // 检查当前状态
+  // 检查当前状态：区分 未监听 / 正在监听 / 服务未启动 / 识别异常
   chrome.runtime.sendMessage({ type: "LISTEN_STATUS" }).then(res => {
     if (res?.active) {
-      updateListenUI(true);
+      setListenState("listening", { profileName: document.getElementById("listenProfile")?.selectedOptions?.[0]?.textContent || "" });
       startPollListenStatus();
+    } else if (res?.lastError) {
+      setListenState("error", { sub: humanizeListenError(res.lastError), active: false });
+    } else {
+      setListenState("idle");
     }
-  }).catch(() => {});
+  }).catch(() => {
+    setListenState("offline"); // SW 无响应 → 本地服务未启动
+  });
 }
 
-function updateListenUI(active) {
+// 识别异常文案：普通中文，不堆技术词
+function humanizeListenError(err) {
+  const e = String(err || "");
+  if (e.includes("local_service_offline")) return "本地服务没在跑，点「查看操作说明」启动后再试。";
+  if (e.includes("not_live_tab")) return "当前标签页不是直播间，请先打开抖音直播间。";
+  return "出现异常，可先停止监听再重新开始；仍不行请查看操作说明。";
+}
+
+// TASK-UI-002：监听四态。识别异常时停止按钮仍可用，不把用户卡死。
+function setListenState(state, opts) {
+  opts = opts || {};
   const dot = document.getElementById("listenDot");
-  const text = document.getElementById("listenStatusText");
+  const title = document.getElementById("listenStatusText");
+  const sub = document.getElementById("listenStatusSub");
   const stats = document.getElementById("listenStats");
   const startBtn = document.getElementById("btnListenStart");
   const stopBtn = document.getElementById("btnListenStop");
+  const help = document.getElementById("listenHelp");
 
-  if (active) {
+  startBtn.style.display = "none";
+  stopBtn.style.display = "none";
+  startBtn.disabled = false;
+  stopBtn.disabled = false;
+  stats.style.display = "none";
+  help.style.display = "none";
+
+  if (state === "listening") {
     dot.style.background = "#4CAF50";
     dot.className = "status-dot live";
-    text.textContent = "监听中...";
-    text.style.color = "#4CAF50";
+    title.textContent = "正在监听";
+    title.style.color = "#4CAF50";
+    sub.textContent = opts.profileName ? ("本场：" + opts.profileName) : "";
     stats.style.display = "block";
-    startBtn.style.display = "none";
     stopBtn.style.display = "block";
-  } else {
+    stopBtn.textContent = "停止监听";
+  } else if (state === "offline") {
+    dot.style.background = "#ff9800";
+    dot.className = "status-dot";
+    title.textContent = "服务未启动";
+    title.style.color = "#ff9800";
+    sub.textContent = "本地服务没在跑，先启动服务再开始监听。";
+    startBtn.style.display = "block";
+    startBtn.disabled = true;
+    startBtn.textContent = "开始监听";
+    help.style.display = "block";
+  } else if (state === "error") {
+    dot.style.background = "#ff9800";
+    dot.className = "status-dot";
+    title.textContent = "识别异常";
+    title.style.color = "#ff9800";
+    sub.textContent = opts.sub || "出现异常，可停止后重新开始。";
+    if (opts.active) stats.style.display = "block";
+    startBtn.style.display = "block";
+    startBtn.textContent = "重新开始";
+    stopBtn.style.display = "block"; // 识别异常时停止按钮仍可用
+    stopBtn.textContent = "停止监听";
+  } else { // idle：未监听
     dot.style.background = "#ccc";
     dot.className = "status-dot";
-    text.textContent = "未开始";
-    text.style.color = "#666";
-    stats.style.display = "none";
+    title.textContent = "未监听";
+    title.style.color = "#666";
+    sub.textContent = "点「开始监听」，开始记录这场直播。";
     startBtn.style.display = "block";
-    startBtn.disabled = false;
     startBtn.textContent = "开始监听";
-    stopBtn.style.display = "none";
   }
+}
+
+function updateListenUI(active) {
+  // 兼容旧调用：统一走四态
+  setListenState(active ? "listening" : "idle");
 }
 
 function startPollListenStatus() {
@@ -354,8 +403,11 @@ function startPollListenStatus() {
         document.getElementById("listenDanmakuCount").textContent = res.danmakuCount || 0;
         document.getElementById("listenAudioChunks").textContent = res.audioChunks || 0;
         document.getElementById("listenDuration").textContent = Math.floor((res.duration || 0) / 1000) + "s";
-        if (!res.active) {
-          updateListenUI(false);
+        if (res.lastError) {
+          // 识别异常：仍在监听则保持停止按钮可用
+          setListenState("error", { sub: humanizeListenError(res.lastError), active: !!res.active });
+        } else if (!res.active) {
+          setListenState("idle");
           stopPollListenStatus();
         }
       }

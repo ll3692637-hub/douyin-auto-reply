@@ -44,6 +44,13 @@
   .toolbar { margin-bottom: 12px; display: flex; gap: 8px; align-items: center; }
   .toolbar label { font-size: 12px; color: #666; }
   .toolbar select { font-size: 12px; padding: 4px 8px; }
+  /* TASK-UI-002：左侧导航 */
+  .nav-btn { flex: 1; padding: 8px 4px; font-size: 13px; border: 1px solid #ddd; border-radius: 8px; background: #fff; cursor: pointer; color: #555; }
+  .nav-btn.active { background: #2196F3; border-color: #2196F3; color: #fff; font-weight: 600; }
+  .sess-title { font-size: 14px; font-weight: 600; color: #333; }
+  .sess-sub { font-size: 12px; color: #999; margin-top: 3px; }
+  .live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #f44336; margin-right: 6px; animation: blink 1.5s infinite; }
+  @keyframes blink { 50% { opacity: .35; } }
 </style>
 </head>
 <body>
@@ -51,13 +58,28 @@
   <h1>🎙️ 直播复盘</h1>
   <span class="sub">LiveRoomListener · 本机数据 · 不上传</span>
 </header>
+<div id="svcBanner" style="display:none;background:#fff3e0;color:#8d4e00;padding:10px 16px;font-size:13px;border-bottom:1px solid #ffe0b2">
+  ⚠️ 本地服务未启动 → 请在 listener 目录运行 <b>npm start</b>，然后刷新本页。
+</div>
 <div class="layout">
   <aside>
-    <h2>会话列表</h2>
-    <div id="sessList"><div class="empty-tip">加载中…</div></div>
-    <button id="btnStorage" style="width:100%;margin-top:10px;padding:8px;border:1px solid #ddd;border-radius:6px;background:#fff;cursor:pointer;font-size:13px">💾 存储管理</button>
-    <h2 style="margin-top:16px">页面诊断 <span style="font-size:11px;color:#999;font-weight:normal">本机保存</span></h2>
-    <div id="diagList"><div class="empty-tip">暂无诊断报告</div></div>
+    <nav id="mainNav" style="display:flex;gap:6px;margin-bottom:12px">
+      <button data-nav="review" class="nav-btn active">📺 直播复盘</button>
+      <button data-nav="storage" class="nav-btn">💾 存储管理</button>
+      <button data-nav="diag" class="nav-btn" title="仅排查问题时使用">🔧 诊断工具</button>
+    </nav>
+    <div id="navContext">
+      <div id="ctxReview">
+        <div id="sessList"><div class="empty-tip">加载中…</div></div>
+      </div>
+      <div id="ctxStorage" style="display:none">
+        <div style="font-size:12px;color:#999;line-height:1.6">查看本机占用、清理截图与旧会话。<br>点上方"💾 存储管理"进入。</div>
+      </div>
+      <div id="ctxDiag" style="display:none">
+        <div style="font-size:11px;color:#999;margin-bottom:6px">仅排查问题时使用</div>
+        <div id="diagList"><div class="empty-tip">暂无诊断报告</div></div>
+      </div>
+    </div>
   </aside>
   <main id="main">
     <div class="empty-tip">← 选择一场会话查看复盘</div>
@@ -67,7 +89,7 @@
 <script>
 const $ = id => document.getElementById(id);
 let showKind = "all"; // all | transcript | danmaku
-let viewMode = "timeline"; // timeline | segments（TASK-SEGMENT-001）
+let viewMode = "segments"; // timeline | segments（TASK-UI-002：默认分段复盘）
 
 function fmtMs(ms) {
   const s = Math.floor((ms || 0) / 1000);
@@ -82,19 +104,52 @@ function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
 
+// TASK-UI-002：人性化时间标题，如"10月11日 19:30"
+function fmtDateTime(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// TASK-UI-002：左侧三导航
+let currentNav = "review";
+function switchNav(nav) {
+  currentNav = nav;
+  document.querySelectorAll(".nav-btn").forEach(b => b.classList.toggle("active", b.dataset.nav === nav));
+  $("ctxReview").style.display = nav === "review" ? "block" : "none";
+  $("ctxStorage").style.display = nav === "storage" ? "block" : "none";
+  $("ctxDiag").style.display = nav === "diag" ? "block" : "none";
+  if (nav === "storage") showStorage();
+}
+
+let autoSelected = false;
+
 async function loadSessions() {
   try {
     const r = await fetch("/api/sessions");
     const data = await r.json();
     const list = data.sessions || [];
-    if (!list.length) { $("sessList").innerHTML = '<div class="empty-tip">暂无会话</div>'; return; }
-    $("sessList").innerHTML = list.map(s => `
+    $("svcBanner").style.display = "none";
+    if (!list.length) {
+      $("sessList").innerHTML = '<div class="empty-tip">还没有直播记录。<br>打开插件弹窗，点「开始监听」。📺</div>';
+      return;
+    }
+    $("sessList").innerHTML = list.map(s => {
+      const active = !s.endTime;
+      const title = active
+        ? `<span class="live-dot"></span>正在直播`
+        : `${esc(fmtDateTime(s.startTime))} 的直播`;
+      const dur = (s.startTime && s.endTime) ? fmtDur(s.endTime - s.startTime) : (active ? "进行中" : "—");
+      const sub = `${dur} · 转写 ${s.transcriptCount} · 弹幕 ${s.danmakuCount} · 换品 ${s.productCount || 0} · 截图 ${s.visualCount || 0}`;
+      return `
       <div class="sess" data-id="${esc(s.sessionId)}">
-        <div class="id">${!s.endTime ? '<span class="live-dot"></span>' : ""}${esc(s.sessionId.slice(0, 24))}…
+        <div class="sess-title">${title}
           ${s.endTime ? `<span class="sess-del" data-del="${esc(s.sessionId)}" title="删除会话"
             style="float:right;color:#ccc;cursor:pointer;font-size:14px">✕</span>` : ""}</div>
-        <div class="meta">${esc(fmtTime(s.startTime))} · 转写 ${s.transcriptCount} · 弹幕 ${s.danmakuCount} · 画面 ${s.visualCount || 0} · 换品 ${s.productCount || 0}<br>档案：${esc(s.profileName)}</div>
-      </div>`).join("");
+        <div class="sess-sub">${esc(sub)}</div>
+      </div>`;
+    }).join("");
     document.querySelectorAll(".sess").forEach(el => {
       el.addEventListener("click", (ev) => {
         if (ev.target.dataset.del) { deleteSession(ev.target.dataset.del); return; }
@@ -103,8 +158,15 @@ async function loadSessions() {
         loadDetail(el.dataset.id);
       });
     });
+    // AC-UI2-02：进站自动进入最新场次
+    if (!autoSelected && list.length) {
+      autoSelected = true;
+      const first = document.querySelector(".sess");
+      if (first) { first.classList.add("active"); loadDetail(first.dataset.id); }
+    }
   } catch (e) {
     $("sessList").innerHTML = '<div class="empty-tip">服务未连接</div>';
+    $("svcBanner").style.display = "block";
   }
 }
 
@@ -446,6 +508,7 @@ async function loadDetail(sessionId) {
     $("main").innerHTML = `
       <div class="card">
         <h3>场次信息</h3>
+        ${!info.endTime ? '<div style="font-size:13px;color:#4CAF50;margin-bottom:8px"><span class="live-dot"></span>正在监听，数据会陆续进来。</div>' : ""}
         <div class="kv">
           <span>开始：<b>${esc(fmtTime(info.startTime))}</b></span>
           <span>时长：<b>${dur}</b></span>
@@ -456,10 +519,11 @@ async function loadDetail(sessionId) {
         </div>
         ${(snap.sessionKeywords && snap.sessionKeywords.length)
           ? `<div style="margin-top:8px;font-size:12px;color:#666">本场关键词：${esc(snap.sessionKeywords.join("，"))}</div>` : ""}
+        <div style="margin-top:8px;font-size:11px;color:#ccc">编号：${esc(sessionId)}</div>
       </div>
       <div class="card">
         <h3>流量 / 成交</h3>
-        <div class="nodata">暂无数据（对应采集任务尚未实现）</div>
+        <div class="nodata">暂无数据</div>
       </div>
       <div class="card">
         <h3>画面 / 趋势 <span style="font-size:11px;color:#999;font-weight:normal">约5分钟/张（首张为启动时立即采样）</span></h3>
@@ -515,7 +579,9 @@ async function loadDetail(sessionId) {
 
 loadSessions();
 loadDiags();
-document.getElementById("btnStorage").addEventListener("click", showStorage);
+document.querySelectorAll(".nav-btn").forEach(b => {
+  b.addEventListener("click", () => switchNav(b.dataset.nav));
+});
 </script>
 </body>
 </html>

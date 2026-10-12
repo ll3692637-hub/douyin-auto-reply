@@ -248,35 +248,44 @@ input:checked + .slider:before { transform: translateX(16px); }
     </div>
   </div>
 
-  <div class="status-bar">
-    <div class="status-dot" id="statusDot"></div>
-    <span id="statusText">检测直播页面中...</span>
-    <span id="platformBadge" style="margin-left:auto;font-size:10px;padding:1px 6px;border-radius:4px;color:#fff;background:#888;">--</span>
-  </div>
-
-  <div class="section">
-    <div class="section-title">监听模式（只读采集）</div>
+  <!-- TASK-UI-002：直播监听卡片置顶，状态一眼可见 -->
+  <div class="section" style="border:2px solid #2196F3;border-radius:10px">
+    <div class="section-title">🔴 直播监听 <span style="font-size:11px;color:#999;font-weight:normal">只读采集，不发弹幕</span></div>
     <div id="listenSection" style="display:none">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-        <div class="status-dot" id="listenDot" style="background:#ccc"></div>
-        <span id="listenStatusText" style="font-size:12px;color:#666">未开始</span>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <div class="status-dot" id="listenDot" style="background:#ccc;width:14px;height:14px;flex-shrink:0"></div>
+        <div>
+          <div id="listenStatusText" style="font-size:15px;font-weight:600;color:#666">未监听</div>
+          <div id="listenStatusSub" style="font-size:11px;color:#999;margin-top:2px"></div>
+        </div>
       </div>
       <div id="listenStats" style="display:none;font-size:11px;color:#888;gap:8px;margin-bottom:8px">
         <span>弹幕: <b id="listenDanmakuCount">0</b></span> ·
         <span>音频段: <b id="listenAudioChunks">0</b></span> ·
         <span>时长: <b id="listenDuration">0s</b></span>
       </div>
-      <div id="listenProfileRow" style="margin-bottom:8px">
-        <div style="font-size:11px;color:#888;margin-bottom:4px">识别档案</div>
-        <select id="listenProfile" style="width:100%;font-size:12px;padding:6px;border:1px solid #ddd;border-radius:4px"></select>
-        <div style="font-size:11px;color:#888;margin:6px 0 4px">本场关键名词（品牌/商品/材质/活动，逗号分隔）</div>
-        <input id="listenKeywords" type="text" placeholder="如：上海故事，真丝拉绒，秋上新" style="width:100%;font-size:12px;padding:6px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box">
-      </div>
-      <button class="btn btn-primary" id="btnListenStart" style="width:100%;background:#2196F3">开始监听</button>
-      <button class="btn btn-danger" id="btnListenStop" style="width:100%;display:none;margin-top:6px">停止监听</button>
-      <button class="btn btn-ghost" id="btnPageDiag" style="width:100%;margin-top:6px">页面诊断</button>
-      <div id="diagResult" style="display:none;font-size:11px;color:#4caf50;margin-top:6px"></div>
+      <button class="btn btn-primary" id="btnListenStart" style="width:100%;background:#2196F3;padding:12px;font-size:15px;font-weight:600">开始监听</button>
+      <button class="btn btn-danger" id="btnListenStop" style="width:100%;display:none;margin-top:6px;padding:12px;font-size:15px;font-weight:600">停止监听</button>
+      <details id="listenSettings" style="margin-top:10px">
+        <summary style="font-size:12px;color:#666;cursor:pointer;user-select:none">▸ 本场设置</summary>
+        <div style="margin-top:8px">
+          <div style="font-size:11px;color:#888;margin-bottom:4px">识别档案</div>
+          <select id="listenProfile" style="width:100%;font-size:12px;padding:6px;border:1px solid #ddd;border-radius:4px"></select>
+          <div style="font-size:11px;color:#888;margin:6px 0 4px">本场关键名词（品牌/商品/材质/活动，逗号分隔）</div>
+          <input id="listenKeywords" type="text" placeholder="如：上海故事，真丝拉绒，秋上新" style="width:100%;font-size:12px;padding:6px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box">
+        </div>
+      </details>
       <div id="listenError" style="display:none;font-size:11px;color:#f44336;margin-top:6px"></div>
+      <details id="listenHelp" style="display:none;margin-top:6px">
+        <summary style="font-size:11px;color:#2196F3;cursor:pointer;user-select:none">查看操作说明</summary>
+        <div style="font-size:11px;color:#666;margin-top:4px;line-height:1.7">
+          先启动本地监听服务：在「终端」里进入项目的 <b>listener</b> 目录，运行 <b>npm start</b>，看到"本地监听服务已启动"后，重新打开本弹窗再点「开始监听」。
+        </div>
+      </details>
+      <div style="margin-top:8px;text-align:right">
+        <button class="btn btn-ghost" id="btnPageDiag" style="font-size:11px;color:#999;padding:2px 6px">页面诊断（排查用）</button>
+      </div>
+      <div id="diagResult" style="display:none;font-size:11px;color:#4caf50;margin-top:6px"></div>
     </div>
     <div id="listenNoPage" style="font-size:11px;color:#bbb;text-align:center;padding:8px 0">
       仅支持抖音直播间页面
@@ -284,7 +293,16 @@ input:checked + .slider:before { transform: translateX(16px); }
   </div>
 
   <div class="section">
-    <div class="section-title">回复规则</div>
+    <div class="section-title">💬 自动回复</div>
+    <div style="font-size:11px;color:#666;background:#f7f7f7;border-radius:6px;padding:8px;margin-bottom:8px;line-height:1.6">
+      自动回复可单独设置。当前版本开启监听时，自动回复会暂停；监听与自动回复双开将在后续支持。
+    </div>
+    <div class="status-bar">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">检测直播页面中...</span>
+      <span id="platformBadge" style="margin-left:auto;font-size:10px;padding:1px 6px;border-radius:4px;color:#fff;background:#888;">--</span>
+    </div>
+    <div class="section-title" style="margin-top:8px">回复规则</div>
     <div class="rule-list" id="ruleList"></div>
   </div>
 
