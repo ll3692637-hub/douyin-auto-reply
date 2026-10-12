@@ -20,7 +20,14 @@
   .sess .meta { font-size: 12px; color: #666; margin-top: 4px; }
   .sess .live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #4CAF50; margin-right: 5px; }
   main { flex: 1; overflow-y: auto; padding: 18px 22px; }
-  .card { background: #fff; border-radius: 8px; padding: 16px 18px; margin-bottom: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  .card { background: #fff; border-radius: 16px; padding: 16px 18px; margin-bottom: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  /* TASK-UI-003v2：圆滑苹果风 */
+  .tl-controls button { border-radius: 10px; }
+  .tl-controls input[type="text"] { border-radius: 10px; }
+  .seg-toggle { border-radius: 10px !important; }
+  #tlCanvas { border-radius: 12px; }
+  .tl-ev { border-radius: 10px; }
+  .search-match { border-radius: 8px; }
   .card h3 { font-size: 14px; margin-bottom: 10px; }
   .kv { display: flex; flex-wrap: wrap; gap: 8px 24px; font-size: 13px; color: #555; }
   .kv b { color: #222; }
@@ -554,7 +561,12 @@ const TL_PAGE_SIZE = 50;
 
 function initOverview(sessionId, tlWithDelta, info) {
   const cv = $("tlCanvas");
-  if (!cv || typeof Timeline === "undefined") return;
+  if (!cv) return;
+  if (typeof Timeline === "undefined") {
+    // server.js 未重启（/timeline.js 路由缺失）时的中文提示，不留空白
+    cv.outerHTML = '<div class="nodata" style="padding:24px;text-align:center">时间轴组件未加载：本地服务版本过旧，请重启服务（Ctrl+C 后重新 npm start）。</div>';
+    return;
+  }
   tlData = buildTimelineData(tlWithDelta, info, sessionId);
   tlInstance = new Timeline(cv);
   tlInstance.setData(tlData);
@@ -735,33 +747,19 @@ async function loadDetail(sessionId) {
     });
 
     $("main").innerHTML = `
-      <div class="card">
-        <h3>场次信息</h3>
-        ${!info.endTime ? '<div style="font-size:13px;color:#4CAF50;margin-bottom:8px"><span class="live-dot"></span>正在监听，数据会陆续进来。</div>' : ""}
-        <div class="kv">
-          <span>开始：<b>${esc(fmtTime(info.startTime))}</b></span>
-          <span>时长：<b>${dur}</b></span>
-          <span>转写：<b>${data.transcriptCount}</b></span>
-          <span>弹幕：<b>${data.danmakuCount}</b></span>
-          <span>音频段：<b>${info.audioChunks || 0}</b></span>
-          <span>识别档案：<b>${esc(snap.profileName || "通用")}</b><span class="badge b-profile">${esc(snap.profileId || "general")}</span></span>
+      <div class="card" style="padding:12px 16px">
+        <div style="font-size:13px;color:#333;display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+          ${!info.endTime ? '<span style="color:#4CAF50"><span class="live-dot"></span>正在监听</span>' : ""}
+          <span>开始 <b>${esc(fmtTime(info.startTime))}</b></span>
+          <span>时长 <b>${dur}</b></span>
+          <span>转写 <b>${data.transcriptCount}</b></span>
+          <span>弹幕 <b>${data.danmakuCount}</b></span>
+          <span>换品 <b>${tl.filter(x => x.kind === "product" && x.data && x.data.type !== "price_update").length}</b></span>
+          <span>截图 <b>${tl.filter(x => x.kind === "visual" && x.data && x.data.framePath).length}</b></span>
+          <span style="color:#999">档案 ${esc(snap.profileName || "通用")}</span>
         </div>
         ${(snap.sessionKeywords && snap.sessionKeywords.length)
-          ? `<div style="margin-top:8px;font-size:12px;color:#666">本场关键词：${esc(snap.sessionKeywords.join("，"))}</div>` : ""}
-        <div style="margin-top:8px;font-size:11px;color:#ccc">编号：${esc(sessionId)}</div>
-      </div>
-      <div class="card">
-        <h3>流量 / 成交</h3>
-        <div class="nodata">暂无数据</div>
-      </div>
-      <div class="card">
-        <h3>画面 / 趋势 <span style="font-size:11px;color:#999;font-weight:normal">约5分钟/张（首张为启动时立即采样）</span></h3>
-        <div id="tlVisual">
-          ${tlWithDelta.filter(x => x.kind === "visual").length
-            ? tlWithDelta.filter(x => x.kind === "visual").map(x =>
-              `<div class="tl-item">${renderVisual(x.data, sessionId, x._delta)}</div>`).join("")
-            : '<div class="nodata">暂无数据</div>'}
-        </div>
+          ? `<div style="margin-top:6px;font-size:12px;color:#666">本场关键词：${esc(snap.sessionKeywords.join("，"))}</div>` : ""}
       </div>
       <div class="card">
         <div class="toolbar">
@@ -823,10 +821,43 @@ async function loadDetail(sessionId) {
       <div id="shotLightbox">
         <img id="shotLightboxImg" src="" alt="截图放大">
         <button id="shotLightboxBack">返回原定位</button>
+      </div>
+      <div class="card">
+        <h3 class="collapse-toggle" style="cursor:pointer;user-select:none">画面 / 趋势
+          <span style="font-size:11px;color:#999;font-weight:normal">约5分钟/张（首张为启动时立即采样）</span>
+          <span class="chev" style="float:right;color:#999">▸</span></h3>
+        <div class="collapse-body" style="display:none">
+          <div id="tlVisual">
+            ${tlWithDelta.filter(x => x.kind === "visual").length
+              ? tlWithDelta.filter(x => x.kind === "visual").map(x =>
+                `<div class="tl-item">${renderVisual(x.data, sessionId, x._delta)}</div>`).join("")
+              : '<div class="nodata">暂无数据</div>'}
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3 class="collapse-toggle" style="cursor:pointer;user-select:none">流量 / 成交
+          <span class="chev" style="float:right;color:#999">▸</span></h3>
+        <div class="collapse-body" style="display:none"><div class="nodata">暂无数据</div></div>
       </div>`;
+    // 折叠卡片：点击标题展开/收起
+    document.querySelectorAll(".collapse-toggle").forEach(h => {
+      h.addEventListener("click", () => {
+        const body = h.nextElementSibling;
+        const open = body.style.display !== "none";
+        body.style.display = open ? "none" : "block";
+        const chev = h.querySelector(".chev");
+        if (chev) chev.textContent = open ? "▸" : "▾";
+      });
+    });
     const kf = $("kindFilter");
     kf.value = showKind;
-    kf.addEventListener("change", () => { showKind = kf.value; loadDetail(sessionId); });
+    // 筛选只刷新时间轴区域，保持滚动位置（TASK-UI-003v2）
+    kf.addEventListener("change", () => {
+      showKind = kf.value;
+      const st = window.scrollY;
+      loadDetail(sessionId).then(() => requestAnimationFrame(() => window.scrollTo(0, st)));
+    });
     // TASK-UI-003：时间轴总览 / 完整时间轴切换
     const vo = $("viewOverview"), vt = $("viewTimeline");
     const paintViewBtns = () => {
