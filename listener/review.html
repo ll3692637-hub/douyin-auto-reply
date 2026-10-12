@@ -114,6 +114,7 @@ function fmtDateTime(ts) {
 
 // TASK-UI-002：左侧三导航
 let currentNav = "review";
+let currentSessionId = null;
 function switchNav(nav) {
   currentNav = nav;
   document.querySelectorAll(".nav-btn").forEach(b => b.classList.toggle("active", b.dataset.nav === nav));
@@ -121,6 +122,7 @@ function switchNav(nav) {
   $("ctxStorage").style.display = nav === "storage" ? "block" : "none";
   $("ctxDiag").style.display = nav === "diag" ? "block" : "none";
   if (nav === "storage") showStorage();
+  if (nav === "review" && currentSessionId) loadDetail(currentSessionId); // 切回时恢复当前场次
 }
 
 let autoSelected = false;
@@ -155,6 +157,7 @@ async function loadSessions() {
         if (ev.target.dataset.del) { deleteSession(ev.target.dataset.del); return; }
         document.querySelectorAll(".sess").forEach(x => x.classList.remove("active"));
         el.classList.add("active");
+        currentSessionId = el.dataset.id;
         loadDetail(el.dataset.id);
       });
     });
@@ -162,7 +165,7 @@ async function loadSessions() {
     if (!autoSelected && list.length) {
       autoSelected = true;
       const first = document.querySelector(".sess");
-      if (first) { first.classList.add("active"); loadDetail(first.dataset.id); }
+      if (first) { first.classList.add("active"); currentSessionId = first.dataset.id; loadDetail(first.dataset.id); }
     }
   } catch (e) {
     $("sessList").innerHTML = '<div class="empty-tip">服务未连接</div>';
