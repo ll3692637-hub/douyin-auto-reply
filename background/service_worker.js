@@ -41,7 +41,7 @@ function persistListenState() {
 // VISUAL_INTERVAL_MS 为配置位置；截图压缩到约 1280x720 JPEG q0.7。
 // =============================================
 
-const VISUAL_INTERVAL_MS = 5 * 60 * 1000; // 画面/趋势采样间隔：5 分钟（2026-10-11 用户定）
+const VISUAL_INTERVAL_MS = 20 * 1000; // 画面/趋势采样间隔：验收期临时 20 秒（2026-10-12），验收通过后调回 5 分钟
 const VISUAL_FRAME_MAX_W = 1280;
 const VISUAL_FRAME_MAX_H = 720;
 const VISUAL_JPEG_QUALITY = 0.7;
