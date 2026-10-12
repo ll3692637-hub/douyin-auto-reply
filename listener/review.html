@@ -51,6 +51,29 @@
   .sess-sub { font-size: 12px; color: #999; margin-top: 3px; }
   .live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #f44336; margin-right: 6px; animation: blink 1.5s infinite; }
   @keyframes blink { 50% { opacity: .35; } }
+  /* TASK-UI-003：时间轴总览 */
+  #tlCanvas { width: 100%; display: block; border: 1px solid #eee; border-radius: 8px; background: #fafbfc; }
+  .tl-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; font-size: 12px; }
+  .tl-controls button { padding: 5px 12px; font-size: 12px; border: 1px solid #ddd; border-radius: 6px; background: #fff; cursor: pointer; }
+  .tl-controls button.active { background: #2196F3; border-color: #2196F3; color: #fff; }
+  .tl-controls input[type="text"] { padding: 5px 8px; font-size: 12px; border: 1px solid #ddd; border-radius: 6px; width: 160px; }
+  .tl-hint { font-size: 11px; color: #999; }
+  .tl-detail { display: flex; gap: 16px; margin-top: 12px; }
+  .tl-left { flex: 1.2; min-width: 0; }
+  .tl-right { flex: 1; min-width: 0; }
+  .tl-detail h4 { margin: 12px 0 6px; font-size: 14px; }
+  .tl-detail h4:first-child { margin-top: 0; }
+  .tl-ev { max-height: 480px; overflow-y: auto; border: 1px solid #f0f0f0; border-radius: 6px; padding: 8px; }
+  .tl-more { text-align: center; padding: 8px; }
+  .tl-more button { font-size: 12px; padding: 4px 16px; border: 1px solid #ddd; border-radius: 6px; background: #fff; cursor: pointer; }
+  .shot-thumb { display: inline-block; margin: 0 8px 8px 0; cursor: zoom-in; vertical-align: top; }
+  .shot-thumb img { max-width: 180px; border-radius: 6px; border: 1px solid #eee; }
+  #shotLightbox { position: fixed; inset: 0; background: rgba(0,0,0,.8); display: none; z-index: 999; align-items: center; justify-content: center; flex-direction: column; }
+  #shotLightbox img { max-width: 90vw; max-height: 85vh; border-radius: 8px; }
+  #shotLightbox button { margin-top: 12px; padding: 8px 24px; font-size: 14px; border-radius: 6px; border: none; cursor: pointer; }
+  .search-match { padding: 6px 8px; border-bottom: 1px solid #f5f5f5; cursor: pointer; font-size: 13px; }
+  .search-match:hover { background: #f0f7ff; }
+  .search-match .t { color: #999; font-size: 11px; margin-right: 6px; }
 </style>
 </head>
 <body>
@@ -86,10 +109,11 @@
   </main>
 </div>
 <script src="/segment.js"></script>
+<script src="/timeline.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 let showKind = "all"; // all | transcript | danmaku
-let viewMode = "segments"; // timeline | segments（TASK-UI-002：默认分段复盘）
+let viewMode = "overview"; // overview | timeline（TASK-UI-003：默认时间轴总览）
 
 function fmtMs(ms) {
   const s = Math.floor((ms || 0) / 1000);
@@ -483,6 +507,208 @@ async function showStorage() {
   }
 }
 
+// TASK-UI-003：从时间轴数据构建四轨道数据
+function buildTimelineData(tlWithDelta, info, sessionId) {
+  const durationMs = (info.endTime && info.startTime)
+    ? info.endTime - info.startTime
+    : (info.startTime ? Date.now() - info.startTime : 60000);
+  // 商品区间：复用分段规则
+  const segs = LiveSegments.buildSegments(
+    tlWithDelta.map(x => ({ kind: x.kind, at: x.at, data: x.data })),
+    info
+  );
+  const products = segs.map(s => {
+    const prod = s.product ? (s.product.product || s.product) : null;
+    return {
+      startMs: s.startMs, endMs: s.endMs == null ? durationMs : s.endMs,
+      name: prod ? (prod.name || "未知商品") : "未识别商品的时间段",
+      priceText: prod ? (prod.priceText || (prod.price ? "¥" + prod.price : "")) : "",
+      type: prod ? "product" : "unrecognized",
+      seg: s
+    };
+  });
+  const prices = tlWithDelta
+    .filter(x => x.kind === "product" && x.data && x.data.type === "price_update")
+    .map(x => ({ atMs: x.at, priceText: (x.data.product && x.data.product.priceText) || "", name: (x.data.product && x.data.product.name) || "" }));
+  const online = tlWithDelta
+    .filter(x => x.kind === "visual" && x.data && x.data.metrics && x.data.metrics.online != null)
+    .map(x => ({ atMs: x.at, online: x.data.metrics.online }));
+  const shots = tlWithDelta
+    .filter(x => x.kind === "visual" && x.data && x.data.framePath)
+    .map(x => ({
+      atMs: x.at,
+      file: x.data.framePath.split("/").pop(),
+      sessionId
+    }));
+  const switches = tlWithDelta
+    .filter(x => x.kind === "product" && x.data && x.data.type !== "price_update")
+    .map(x => ({ atMs: x.at, name: (x.data.product && x.data.product.name) || "" }));
+  return { durationMs, products, prices, online, shots, switches };
+}
+
+let tlInstance = null;
+let tlData = null;
+let tlRange = null; // {start, end} 当前选中范围
+let tlEvPage = 0;
+const TL_PAGE_SIZE = 50;
+
+function initOverview(sessionId, tlWithDelta, info) {
+  const cv = $("tlCanvas");
+  if (!cv || typeof Timeline === "undefined") return;
+  tlData = buildTimelineData(tlWithDelta, info, sessionId);
+  tlInstance = new Timeline(cv);
+  tlInstance.setData(tlData);
+  tlInstance.onRangeSelect = (r) => {
+    tlRange = r;
+    tlEvPage = 0;
+    renderDetailRange(sessionId, tlWithDelta);
+  };
+  tlInstance.onNodeClick = (hit) => {
+    if (hit.type === "product") {
+      const p = hit.data;
+      tlRange = { start: Math.round(p.startMs), end: Math.round(p.endMs) };
+      tlInstance.setSelection(tlRange.start, tlRange.end);
+      tlInstance.setCursor(tlRange.start);
+    } else if (hit.type === "price") {
+      const at = Math.round(hit.data.atMs);
+      tlInstance.setCursor(at);
+      tlRange = { start: Math.max(0, at - 60000), end: at + 60000 };
+      tlInstance.setSelection(tlRange.start, tlRange.end);
+    } else if (hit.type === "shot") {
+      openShotLightbox(hit.data.sessionId, hit.data.file, hit.data.atMs);
+      return;
+    }
+    tlEvPage = 0;
+    renderDetailRange(sessionId, tlWithDelta);
+  };
+  // 快捷视图
+  document.querySelectorAll("[data-qv]").forEach(b => {
+    b.addEventListener("click", () => {
+      document.querySelectorAll("[data-qv]").forEach(x => x.classList.remove("active"));
+      b.classList.add("active");
+      tlInstance.quickView(b.dataset.qv);
+    });
+  });
+  // 搜索
+  const doSearch = () => {
+    const kw = $("tlSearch").value.trim();
+    const box = $("tlSearchResults");
+    if (!kw) { box.style.display = "none"; return; }
+    const hits = tlWithDelta.filter(x =>
+      (x.kind === "transcript" || x.kind === "danmaku") &&
+      x.data && typeof x.data.text === "string" && x.data.text.includes(kw)
+    ).slice(0, 50);
+    box.innerHTML = hits.length
+      ? hits.map((x, i) => `<div class="search-match" data-i="${i}">
+          <span class="t">${fmtMs(x.at)}</span>${esc(x.data.text.slice(0, 60))}</div>`).join("")
+      : '<div class="nodata" style="padding:8px">无匹配</div>';
+    box.style.display = "block";
+    box.querySelectorAll(".search-match").forEach(el => {
+      el.addEventListener("click", () => {
+        const x = hits[+el.dataset.i];
+        tlInstance.setCursor(x.at);
+        tlRange = { start: Math.max(0, x.at - 60000), end: x.at + 60000 };
+        tlInstance.setSelection(tlRange.start, tlRange.end);
+        tlEvPage = 0;
+        renderDetailRange(sessionId, tlWithDelta);
+        box.style.display = "none";
+      });
+    });
+  };
+  $("tlSearchGo").addEventListener("click", doSearch);
+  $("tlSearch").addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
+  // 上一个/下一个换品
+  const jumpProduct = (dir) => {
+    const sw = tlData.switches;
+    if (!sw.length) return;
+    const cur = tlInstance.cursor != null ? tlInstance.cursor : (tlRange ? tlRange.start : 0);
+    let target = null;
+    if (dir > 0) target = sw.find(s => s.atMs > cur + 1000) || sw[0];
+    else target = sw.slice().reverse().find(s => s.atMs < cur - 1000) || sw[sw.length - 1];
+    if (target) {
+      tlInstance.setCursor(target.atMs);
+      tlRange = { start: Math.max(0, target.atMs - 60000), end: target.atMs + 5 * 60000 };
+      tlInstance.setSelection(tlRange.start, tlRange.end);
+      tlEvPage = 0;
+      renderDetailRange(sessionId, tlWithDelta);
+    }
+  };
+  $("tlPrevProduct").addEventListener("click", () => jumpProduct(-1));
+  $("tlNextProduct").addEventListener("click", () => jumpProduct(1));
+  // 截图放大
+  $("shotLightboxBack").addEventListener("click", () => {
+    $("shotLightbox").style.display = "none";
+  });
+  $("shotLightbox").addEventListener("click", (e) => {
+    if (e.target.id === "shotLightbox") $("shotLightbox").style.display = "none";
+  });
+
+  // 初次打开：全场总览 + 最新片段（进行中）/ 首个片段（已结束）
+  const segs = tlData.products;
+  let initSeg = null;
+  if (!info.endTime) initSeg = segs[segs.length - 1]; // 进行中：最新片段
+  else initSeg = segs[0]; // 已结束：首个片段
+  if (initSeg) {
+    tlRange = { start: Math.round(initSeg.startMs), end: Math.round(initSeg.endMs) };
+    tlInstance.setSelection(tlRange.start, tlRange.end);
+    tlInstance.setCursor(tlRange.start);
+  }
+  renderDetailRange(sessionId, tlWithDelta);
+  // 窗口变化时重绘
+  window.addEventListener("resize", () => tlInstance && tlInstance.render());
+}
+
+function openShotLightbox(sessionId, file, atMs) {
+  const img = $("shotLightboxImg");
+  img.src = `/api/frame?sessionId=${encodeURIComponent(sessionId)}&file=${encodeURIComponent(file)}`;
+  $("shotLightbox").style.display = "flex";
+  if (tlInstance) tlInstance.setCursor(atMs); // 返回时保持原定位
+}
+
+// 渲染选中范围内的证据（分页，避免一次性渲染大量转写/弹幕）
+function renderDetailRange(sessionId, tlWithDelta) {
+  if (!tlRange) {
+    $("tlEvidence").innerHTML = '<div class="nodata">在上方时间轴框选范围（Shift+拖拽），查看该段证据</div>';
+    return;
+  }
+  const inRange = tlWithDelta.filter(x => x.at >= tlRange.start && x.at < tlRange.end);
+  $("tlRangeLabel").textContent = `（${fmtMs(tlRange.start)} – ${fmtMs(tlRange.end)}）`;
+
+  // 左：原话与弹幕（分页）
+  const ev = inRange.filter(x => x.kind === "transcript" || x.kind === "danmaku");
+  const shown = ev.slice(0, (tlEvPage + 1) * TL_PAGE_SIZE);
+  $("tlEvidence").innerHTML = shown.length
+    ? shown.map(x => `<div class="tl-item">${renderItem(x, sessionId)}</div>`).join("")
+    : '<div class="nodata">本范围无转写/弹幕</div>';
+  $("tlMoreWrap").style.display = ev.length > shown.length ? "block" : "none";
+  $("tlMore").onclick = () => { tlEvPage++; renderDetailRange(sessionId, tlWithDelta); };
+  $("tlMore").textContent = `加载更多（剩余 ${ev.length - shown.length} 条）`;
+
+  // 右：商品
+  const prods = inRange.filter(x => x.kind === "product");
+  $("tlProducts").innerHTML = prods.length
+    ? prods.map(x => `<div class="tl-item">${renderProduct(x.data)}</div>`).join("")
+    : '<div class="nodata">本范围无商品</div>';
+
+  // 右：画面
+  const shots = inRange.filter(x => x.kind === "visual" && x.data && x.data.framePath);
+  $("tlShots").innerHTML = shots.length
+    ? shots.map(x => {
+        const file = x.data.framePath.split("/").pop();
+        return `<span class="shot-thumb" data-file="${esc(file)}" data-at="${x.at}">
+          <img loading="lazy" src="/api/frame?sessionId=${encodeURIComponent(sessionId)}&file=${encodeURIComponent(file)}" alt="${fmtMs(x.at)}"></span>`;
+      }).join("")
+    : '<div class="nodata">本范围无截图</div>';
+  document.querySelectorAll(".shot-thumb").forEach(el => {
+    el.addEventListener("click", () => openShotLightbox(sessionId, el.dataset.file, +el.dataset.at));
+  });
+
+  // 右：分析（TASK-AI-002 接入前显示"尚未分析"）
+  $("tlAnalysis").innerHTML = `<div class="nodata">尚未分析</div>
+    <button disabled title="AI 分析即将上线（TASK-AI-002）"
+      style="margin-top:6px;padding:6px 16px;font-size:13px;border:1px solid #ddd;border-radius:6px;background:#f5f5f5;color:#999;cursor:not-allowed">分析这段</button>`;
+}
+
 async function loadDetail(sessionId) {
   $("main").innerHTML = '<div class="empty-tip">加载中…</div>';
   try {
@@ -541,8 +767,8 @@ async function loadDetail(sessionId) {
         <div class="toolbar">
           <h3 style="margin:0">时间轴</h3>
           <div class="seg-toggle" style="display:inline-flex;border:1px solid #ddd;border-radius:4px;overflow:hidden">
+            <button id="viewOverview" class="seg-btn">时间轴总览</button>
             <button id="viewTimeline" class="seg-btn">完整时间轴</button>
-            <button id="viewSegments" class="seg-btn">分段复盘</button>
           </div>
           <label>筛选</label>
           <select id="kindFilter">
@@ -554,27 +780,66 @@ async function loadDetail(sessionId) {
           </select>
           <span style="font-size:12px;color:#999">${tl.length} 条</span>
         </div>
-        <div id="tl">
-          ${viewMode === "segments"
-            ? renderSegments(tlWithDelta, info, sessionId)
-            : (tl.length ? tlWithDelta.map(x => `<div class="tl-item">${renderItem(x, sessionId)}</div>`).join("")
-              : '<div class="nodata">暂无转写与弹幕</div>')}
+        <div id="tlOverview" style="display:${viewMode === "overview" ? "block" : "none"}">
+          <div class="tl-controls">
+            <button data-qv="full" class="active">全场</button>
+            <button data-qv="30m">30分钟</button>
+            <button data-qv="10m">10分钟</button>
+            <input type="text" id="tlSearch" placeholder="搜索转写/弹幕关键词">
+            <button id="tlSearchGo">搜索</button>
+            <button id="tlPrevProduct">↑ 上一个换品</button>
+            <button id="tlNextProduct">下一个换品 ↓</button>
+            <span class="tl-hint">拖拽平移 · 滚轮缩放 · Shift+拖拽框选范围 · 点击节点定位</span>
+          </div>
+          <canvas id="tlCanvas"></canvas>
+          <div id="tlSearchResults" style="display:none;max-height:160px;overflow-y:auto;border:1px solid #eee;border-radius:6px;margin-top:8px"></div>
+          <div class="tl-detail">
+            <div class="tl-left">
+              <h4>原话与弹幕 <span id="tlRangeLabel" style="font-size:11px;color:#999;font-weight:normal"></span></h4>
+              <div class="tl-ev" id="tlEvidence"></div>
+              <div class="tl-more" id="tlMoreWrap" style="display:none"><button id="tlMore">加载更多</button></div>
+            </div>
+            <div class="tl-right">
+              <h4>商品</h4>
+              <div id="tlProducts"><div class="nodata">本范围无商品</div></div>
+              <h4>画面</h4>
+              <div id="tlShots"><div class="nodata">本范围无截图</div></div>
+              <h4>分析</h4>
+              <div id="tlAnalysis">
+                <div class="nodata">尚未分析</div>
+                <button id="tlAnalyzeBtn" disabled title="AI 分析即将上线（TASK-AI-002）"
+                  style="margin-top:6px;padding:6px 16px;font-size:13px;border:1px solid #ddd;border-radius:6px;background:#f5f5f5;color:#999;cursor:not-allowed">分析这段</button>
+              </div>
+            </div>
+          </div>
         </div>
+        <div id="tl">
+          ${viewMode === "timeline"
+            ? (tl.length ? tlWithDelta.map(x => `<div class="tl-item">${renderItem(x, sessionId)}</div>`).join("")
+              : '<div class="nodata">暂无转写与弹幕</div>')
+            : ""}
+        </div>
+      </div>
+      <div id="shotLightbox">
+        <img id="shotLightboxImg" src="" alt="截图放大">
+        <button id="shotLightboxBack">返回原定位</button>
       </div>`;
     const kf = $("kindFilter");
     kf.value = showKind;
     kf.addEventListener("change", () => { showKind = kf.value; loadDetail(sessionId); });
-    // TASK-SEGMENT-001：完整时间轴 / 分段复盘切换
-    const vt = $("viewTimeline"), vs = $("viewSegments");
-    const paintSegBtns = () => {
-      for (const [btn, mode] of [[vt, "timeline"], [vs, "segments"]]) {
+    // TASK-UI-003：时间轴总览 / 完整时间轴切换
+    const vo = $("viewOverview"), vt = $("viewTimeline");
+    const paintViewBtns = () => {
+      for (const [btn, mode] of [[vo, "overview"], [vt, "timeline"]]) {
         btn.style.cssText = "padding:4px 10px;font-size:12px;border:none;cursor:pointer;" +
           (viewMode === mode ? "background:#2196F3;color:#fff" : "background:#fff;color:#333");
       }
+      $("tlOverview").style.display = viewMode === "overview" ? "block" : "none";
     };
-    paintSegBtns();
+    paintViewBtns();
+    vo.addEventListener("click", () => { viewMode = "overview"; paintViewBtns(); initOverview(sessionId, tlWithDelta, info); });
     vt.addEventListener("click", () => { viewMode = "timeline"; loadDetail(sessionId); });
-    vs.addEventListener("click", () => { viewMode = "segments"; loadDetail(sessionId); });
+    if (viewMode === "overview") initOverview(sessionId, tlWithDelta, info);
   } catch (e) {
     $("main").innerHTML = '<div class="empty-tip">加载失败：' + esc(e.message) + "</div>";
   }
