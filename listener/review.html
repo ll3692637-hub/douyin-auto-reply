@@ -529,7 +529,7 @@ async function loadDetail(sessionId) {
         <div class="nodata">暂无数据</div>
       </div>
       <div class="card">
-        <h3>画面 / 趋势 <span style="font-size:11px;color:#999;font-weight:normal">约5分钟/张（首张为启动时立即采样）</span></h3>
+        <h3>画面 / 趋势 <span style="font-size:11px;color:#999;font-weight:normal">约20秒/张（验收期临时，首张为启动时立即采样）</span></h3>
         <div id="tlVisual">
           ${tlWithDelta.filter(x => x.kind === "visual").length
             ? tlWithDelta.filter(x => x.kind === "visual").map(x =>
