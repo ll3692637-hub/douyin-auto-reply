@@ -5,11 +5,14 @@
  * 数据全部为模拟，session.json 标记 mock:true
  */
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
-const SESSIONS_DIR = process.env.LISTENER_DATA_DIR
-  ? path.join(process.env.LISTENER_DATA_DIR, "sessions")
-  : path.join(__dirname, "..", "sessions");
+// 与 server.js 保持一致：LISTENER_DATA_DIR 未设置时用 ~/Library/Application Support/LiveRoomListener
+const APP_SUPPORT = process.env.LISTENER_DATA_DIR
+  ? path.resolve(process.env.LISTENER_DATA_DIR)
+  : path.join(os.homedir(), "Library", "Application Support", "LiveRoomListener");
+const SESSIONS_DIR = path.join(APP_SUPPORT, "sessions");
 
 const HOUR = 3600000;
 const DURATION = 4 * HOUR;
