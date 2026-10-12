@@ -373,11 +373,15 @@ function setListenState(state, opts) {
     title.textContent = "识别异常";
     title.style.color = "#ff9800";
     sub.textContent = opts.sub || "出现异常，可停止后重新开始。";
-    if (opts.active) stats.style.display = "block";
     startBtn.style.display = "block";
     startBtn.textContent = "重新开始";
-    stopBtn.style.display = "block"; // 识别异常时停止按钮仍可用
-    stopBtn.textContent = "停止监听";
+    // 只有异常发生时仍在监听中，才同时显示"重新开始 + 停止监听"
+    if (opts.active) {
+      stats.style.display = "block";
+      stopBtn.style.display = "block";
+      stopBtn.textContent = "停止监听";
+    }
+    // 监听已结束：只保留重新开始，不显示无效的停止按钮
   } else { // idle：未监听
     dot.style.background = "#ccc";
     dot.className = "status-dot";
@@ -404,8 +408,9 @@ function startPollListenStatus() {
         document.getElementById("listenAudioChunks").textContent = res.audioChunks || 0;
         document.getElementById("listenDuration").textContent = Math.floor((res.duration || 0) / 1000) + "s";
         if (res.lastError) {
-          // 识别异常：仍在监听则保持停止按钮可用
+          // 识别异常：仍在监听则保持停止按钮可用；已结束则只留重新开始并停止轮询
           setListenState("error", { sub: humanizeListenError(res.lastError), active: !!res.active });
+          if (!res.active) stopPollListenStatus();
         } else if (!res.active) {
           setListenState("idle");
           stopPollListenStatus();
