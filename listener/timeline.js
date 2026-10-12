@@ -25,6 +25,7 @@
     this.cursor = null; // 定位线（ms）
     this.onRangeSelect = null;
     this.onNodeClick = null;
+    this.onPointClick = null; // 点击空白处：查看该时间点前后证据
     this._nodes = []; // 本次绘制的节点（命中测试用）
     this._drag = null;
     this._selectMode = false;
@@ -127,8 +128,13 @@
       const d = self._drag;
       self._drag = null;
       cv.style.cursor = "grab";
-      if (d && d.select && d.moved && self.sel && self.onRangeSelect) {
+      if (!d) return;
+      if (d.select && d.moved && self.sel && self.onRangeSelect) {
         self.onRangeSelect({ start: Math.round(self.sel.start), end: Math.round(self.sel.end) });
+      } else if (!d.moved && !d.select && self.onPointClick) {
+        // 纯点击时间轴空白处：定位该时间，回调由调用方决定展示范围
+        const rect = cv.getBoundingClientRect();
+        self.onPointClick(Math.round(self._ms(e.clientX - rect.left)));
       }
     });
     cv.addEventListener("mouseleave", () => {

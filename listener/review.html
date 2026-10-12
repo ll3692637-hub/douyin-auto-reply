@@ -575,6 +575,14 @@ function initOverview(sessionId, tlWithDelta, info) {
     tlEvPage = 0;
     renderDetailRange(sessionId, tlWithDelta);
   };
+  tlInstance.onPointClick = (atMs) => {
+    // 点击时间轴空白处：展示该时间点前后 2 分钟的话术与证据
+    tlRange = { start: Math.max(0, atMs - 120000), end: atMs + 120000 };
+    tlInstance.setSelection(tlRange.start, tlRange.end);
+    tlInstance.setCursor(atMs);
+    tlEvPage = 0;
+    renderDetailRange(sessionId, tlWithDelta);
+  };
   tlInstance.onNodeClick = (hit) => {
     if (hit.type === "product") {
       const p = hit.data;
@@ -787,7 +795,7 @@ async function loadDetail(sessionId) {
             <button id="tlSearchGo">搜索</button>
             <button id="tlPrevProduct">↑ 上一个换品</button>
             <button id="tlNextProduct">下一个换品 ↓</button>
-            <span class="tl-hint">拖拽平移 · 滚轮缩放 · Shift+拖拽框选范围 · 点击节点定位</span>
+            <span class="tl-hint">拖拽平移 · 滚轮缩放 · 点击看该处前后2分钟 · Shift+拖拽框选范围 · 点击节点定位</span>
           </div>
           <canvas id="tlCanvas"></canvas>
           <div id="tlSearchResults" style="display:none;max-height:160px;overflow-y:auto;border:1px solid #eee;border-radius:6px;margin-top:8px"></div>
