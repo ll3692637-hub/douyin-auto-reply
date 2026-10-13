@@ -207,19 +207,18 @@ function validateModelOutput(result, evidenceByRef) {
     if (result.verification && result.verification.length > MAX_FIELD_CHARS) errors.push("verification 超长");
     if (errors.length) return { ok: false, errors };
 
-    // 引用校验：ref 存在；atMs 必填且一致；quote 必填且为源文本子串
+    // 引用校验：ref 存在；quote 必填且为源文本子串；atMs 由服务端从原记录补入（Codex 评审：不让模型计算毫秒）
     for (const ev of result.evidence) {
       if (!ev || typeof ev !== "object") { errors.push("evidence 条目非法"); continue; }
       if (!ev.ref || typeof ev.ref !== "string") { errors.push("evidence 缺少 ref"); continue; }
       const src = evidenceByRef.get(ev.ref);
       if (!src) { errors.push(`引用 ${ev.ref} 不存在`); continue; }
-      if (typeof ev.atMs !== "number" || ev.atMs !== src.atMs)
-        errors.push(`引用 ${ev.ref} 缺少时间或时间不一致`);
       const quote = typeof ev.quote === "string" ? ev.quote.trim() : "";
       const srcText = String(src.text || src.name || (src.online != null ? src.online : "")).trim();
       if (!quote) errors.push(`引用 ${ev.ref} 缺少引文`);
       else if (!srcText || !srcText.includes(quote))
         errors.push(`引用 ${ev.ref} 引文与源记录不一致`);
+      else ev.atMs = src.atMs; // 校验通过后补入精确时间
     }
     for (const s of result.suggestions) {
       if (!s || typeof s !== "object") { errors.push("suggestion 条目非法"); continue; }
@@ -260,7 +259,7 @@ function buildPrompt(evidence, rulesText) {
     在线采样: evidence.online.map(o => ({ ref: o.ref, 时间: o.label, 在线: o.online })),
     数据说明: evidence.notes,
   };
-  return `${rulesText}\n\n## 本次分析的证据（JSON）\n\`\`\`json\n${JSON.stringify(ev, null, 1)}\n\`\`\`\n\n请只输出 JSON，不要输出其他内容，格式：\n{"summary":"…","evidence":[{"ref":"t_0001","atMs":123000,"quote":"…"}],"suggestions":[{"text":"…","basedOn":["t_0001"]}],"verification":"…"}`;
+  return `${rulesText}\n\n## 本次分析的证据（JSON）\n\`\`\`json\n${JSON.stringify(ev, null, 1)}\n\`\`\`\n\n请只输出 JSON，不要输出其他内容，格式：\n{"summary":"…","evidence":[{"ref":"t_0001","quote":"…"}],"suggestions":[{"text":"…","basedOn":["t_0001"]}],"verification":"…"}\n注意：evidence 每条只需 ref 和 quote，atMs 由服务端自动补入，不要自行计算或编造时间。`;
 }
 
 // ---------- 模型调用 ----------

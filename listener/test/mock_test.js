@@ -853,12 +853,16 @@ async function testAI002() {
     suggestions: [],
   }, byRef);
   assert.equal(v.ok, false);
-  v = Analysis.validateModelOutput({
+  // Codex 评审新行为：模型给的 atMs 被忽略，服务端统一补入 → 通过
+  const modelOut = {
     summary: "s", verification: "v",
     evidence: [{ ref: "t_0001", atMs: 999999, quote: "这个花色真的绝了" }],
-    suggestions: [],
-  }, byRef);
-  assert.equal(v.ok, false); // 时间不一致
+    suggestions: [{ text: "多讲卖点", basedOn: ["t_0001"] }],
+  };
+  v = Analysis.validateModelOutput(modelOut, byRef);
+  assert.equal(v.ok, true);
+  // 补入的是原记录的精确毫秒（而非模型给的 999999）
+  assert.equal(modelOut.evidence[0].atMs, 100000);
   v = Analysis.validateModelOutput({
     summary: "s", verification: "v",
     evidence: [{ ref: "t_0001", atMs: 100000, quote: "这个花色真的绝了" }],
@@ -926,13 +930,13 @@ async function testAI002() {
     suggestions: [{ text: "多讲卖点", basedOn: ["t_0001"] }],
   }, strictByRef);
   assert.equal(v.ok, false);
-  // 缺 atMs → 不通过
+  // 修3（新行为）：模型不返回 atMs，服务端从原记录补入
   v = Analysis.validateModelOutput({
     summary: "s", verification: "v",
     evidence: [{ ref: "t_0001", quote: "这个花色真的绝了" }],
     suggestions: [{ text: "多讲卖点", basedOn: ["t_0001"] }],
   }, strictByRef);
-  assert.equal(v.ok, false);
+  assert.equal(v.ok, true);
   // 建议无依据 → 不通过
   v = Analysis.validateModelOutput({
     summary: "s", verification: "v",
@@ -990,7 +994,20 @@ async function testAI002() {
   console.log("✓ TASK-AI-002（单片段 AI 分析 mock）：全部通过");
 }
 
-run().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => {
-  if (server && !server.killed) server.kill("SIGINT");
-  fs.rmSync(dataDir, { recursive: true, force: true });
+run().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => {
+  // Codex 评审：先等待服务子进程完全退出再删临时目录，避免 ENOTEMPTY（Node v26）
+  if (server && !server.killed) {
+    await new Promise(resolve => {
+      server.once("exit", resolve);
+      server.kill("SIGINT");
+      setTimeout(() => { try { server.kill("SIGKILL"); } catch {} resolve(); }, 5000);
+    });
+  }
+  try {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  } catch (e) {
+    // 兜底：重试一次
+    await new Promise(r => setTimeout(r, 500));
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
 });
