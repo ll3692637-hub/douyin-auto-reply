@@ -732,18 +732,25 @@ let analyzing = false; // 防重复点击
 let currentPreview = null;
 
 function renderAnalysisPanel(sessionId) {
+  // Codex 评审：只更新控制区，不清空结果区（错误/已有结果保留）
   const rangeLabel = tlRange ? `${fmtMs(tlRange.start)} – ${fmtMs(tlRange.end)}` : "未选范围";
-  $("tlAnalysis").innerHTML = `
-    <div style="font-size:12px;color:#666;margin-bottom:6px">范围：${esc(rangeLabel)}</div>
-    <button id="tlAnalyzeBtn" ${!tlRange || analyzing ? "disabled" : ""}
-      style="padding:8px 20px;font-size:13px;border:none;border-radius:10px;cursor:${!tlRange || analyzing ? "not-allowed" : "pointer"};
-      background:${!tlRange || analyzing ? "#f0f0f0" : "#2196F3"};color:${!tlRange || analyzing ? "#999" : "#fff"}">
-      ${analyzing ? "分析中…" : "分析这段"}</button>
-    <div id="tlAnalysisList" style="margin-top:8px"></div>
-    <div id="tlAnalysisResult" style="margin-top:8px"></div>`;
-  const btn = $("tlAnalyzeBtn");
-  if (btn && tlRange && !analyzing) btn.addEventListener("click", () => doAnalysisPreview(sessionId));
+  const ctl = $("tlAnalysisControls");
+  if (ctl) {
+    ctl.innerHTML = `
+      <div style="font-size:12px;color:#666;margin-bottom:6px">范围：${esc(rangeLabel)}</div>
+      <button id="tlAnalyzeBtn" ${!tlRange || analyzing ? "disabled" : ""}
+        style="padding:8px 20px;font-size:13px;border:none;border-radius:10px;cursor:${!tlRange || analyzing ? "not-allowed" : "pointer"};
+        background:${!tlRange || analyzing ? "#f0f0f0" : "#2196F3"};color:${!tlRange || analyzing ? "#999" : "#fff"}">
+        ${analyzing ? "分析中…" : "分析这段"}</button>`;
+    const btn = $("tlAnalyzeBtn");
+    if (btn && tlRange && !analyzing) btn.addEventListener("click", () => doAnalysisPreview(sessionId));
+  }
   loadAnalysisList(sessionId);
+}
+
+function setAnalyzing(on, sessionId) {
+  analyzing = on;
+  renderAnalysisPanel(sessionId); // 只刷新按钮状态，不碰结果区
 }
 
 async function loadAnalysisList(sessionId) {
@@ -793,7 +800,7 @@ async function doAnalysisPreview(sessionId) {
       return;
     }
     const missingTxt = p.missing.length ? `缺失：${p.missing.join("、")}` : "数据齐全";
-    const cfgTxt = d.secretsConfigured ? "已配置分析 API" : (d.testMode ? "测试模式（MOCK，不计费）" : "未配置分析 API（将使用 MOCK，不计费）");
+    const cfgTxt = d.secretsConfigured ? "已配置分析 API" : (d.testMode ? "测试模式（MOCK，不计费）" : "未配置分析 API（需先配置才能分析）");
     $("tlAnalysisResult").innerHTML = `
       <div class="card" style="background:#f8fbff;border:1px solid #e3f2fd;margin:0">
         <div style="font-size:13px;margin-bottom:6px"><b>将发送给 AI 的数据</b>（${esc(p.range.label)}）</div>
@@ -1013,9 +1020,9 @@ async function loadDetail(sessionId) {
               <div id="tlShots"><div class="nodata">本范围无截图</div></div>
               <h4>分析</h4>
               <div id="tlAnalysis">
-                <div class="nodata">尚未分析</div>
-                <button id="tlAnalyzeBtn" disabled title="AI 分析即将上线（TASK-AI-002）"
-                  style="margin-top:6px;padding:6px 16px;font-size:13px;border:1px solid #ddd;border-radius:6px;background:#f5f5f5;color:#999;cursor:not-allowed">分析这段</button>
+                <div id="tlAnalysisControls"></div>
+                <div id="tlAnalysisList" style="margin-top:8px"></div>
+                <div id="tlAnalysisResult" style="margin-top:8px"></div>
               </div>
             </div>
           </div>

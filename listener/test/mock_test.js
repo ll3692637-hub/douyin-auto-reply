@@ -807,11 +807,18 @@ async function testAI002() {
   // AI-04b：空范围 → hasAnalyzable=false，analyze 不调用
   result = await request("POST", "/api/analysis/preview",
     { sessionId: aiSess, rangeStartMs: 500000, rangeEndMs: 600000 });
-  assert.equal(JSON.parse(result.body).preview.hasAnalyzable, false);
+  const emptyPreview = JSON.parse(result.body).preview;
+  assert.equal(emptyPreview.hasAnalyzable, false);
   result = await request("POST", "/api/analyze",
-    { sessionId: aiSess, rangeStartMs: 500000, rangeEndMs: 600000 });
+    { sessionId: aiSess, rangeStartMs: 500000, rangeEndMs: 600000, evidenceHash: emptyPreview.evidenceHash });
   assert.equal(result.status, 400);
   assert.ok(JSON.parse(result.body).error.includes("无转写"));
+
+  // Codex 评审修2：不传 evidenceHash → HASH_REQUIRED
+  result = await request("POST", "/api/analyze",
+    { sessionId: aiSess, rangeStartMs: 100000, rangeEndMs: 180000 });
+  assert.equal(result.status, 400);
+  assert.equal(JSON.parse(result.body).code, "HASH_REQUIRED");
 
   // AI-07：mock 分析（测试模式），MOCK 明示
   result = await request("POST", "/api/analyze",
@@ -878,10 +885,11 @@ async function testAI002() {
   fs.writeFileSync(path.join(aiDir2, "session.json"), JSON.stringify({ sessionId: aiSess2, startTime: 1 }));
   fs.writeFileSync(path.join(aiDir2, "transcript.jsonl"),
     JSON.stringify({ offsetMs: 1000, text: "你好", status: "ok" }) + "\n");
+  const { evidenceHash: hash2 } = Analysis.collectEvidence(aiDir2, 0, 60000);
   // 模拟删除发生在保存前：直接调 analyzeRange，期间删除目录
   const p = Analysis.analyzeRange({
     sessionDir: aiDir2, sessionId: aiSess2,
-    rangeStartMs: 0, rangeEndMs: 60000, evidenceHash: null,
+    rangeStartMs: 0, rangeEndMs: 60000, evidenceHash: hash2,
     secrets: null, rulesPath: path.join(root, "analysis-rules-v1.md"), mockMode: true,
   });
   fs.rmSync(aiDir2, { recursive: true, force: true }); // 并发删除
@@ -894,6 +902,90 @@ async function testAI002() {
   result = await request("POST", "/api/analysis/feedback",
     { sessionId: aiSess, analysisId: "../../x", type: "useful" });
   assert.equal(result.status, 400);
+
+  // ---- Codex 评审 5 项回归 ----
+  // 修1：正常模式无密钥 → 中文报错，不自动 mock
+  let noKeyErr = null;
+  const fresh = Analysis.collectEvidence(aiDir, 100000, 180000);
+  try {
+    await Analysis.analyzeRange({
+      sessionDir: aiDir, sessionId: aiSess,
+      rangeStartMs: 100000, rangeEndMs: 180000, evidenceHash: fresh.evidenceHash,
+      secrets: null, rulesPath: path.join(root, "analysis-rules-v1.md"), mockMode: false,
+    });
+  } catch (e) { noKeyErr = e; }
+  assert.ok(noKeyErr && noKeyErr.code === "NO_API_KEY");
+  assert.ok(noKeyErr.message.includes("analysis-secrets.json"));
+
+  // 修3：引用严格校验
+  const strictByRef = Analysis.buildEvidenceByRef(evidence);
+  // 引文追加编造内容 → 不通过
+  v = Analysis.validateModelOutput({
+    summary: "s", verification: "v",
+    evidence: [{ ref: "t_0001", atMs: 100000, quote: "这个花色真的绝了然后成交暴涨十倍" }],
+    suggestions: [{ text: "多讲卖点", basedOn: ["t_0001"] }],
+  }, strictByRef);
+  assert.equal(v.ok, false);
+  // 缺 atMs → 不通过
+  v = Analysis.validateModelOutput({
+    summary: "s", verification: "v",
+    evidence: [{ ref: "t_0001", quote: "这个花色真的绝了" }],
+    suggestions: [{ text: "多讲卖点", basedOn: ["t_0001"] }],
+  }, strictByRef);
+  assert.equal(v.ok, false);
+  // 建议无依据 → 不通过
+  v = Analysis.validateModelOutput({
+    summary: "s", verification: "v",
+    evidence: [{ ref: "t_0001", atMs: 100000, quote: "这个花色真的绝了" }],
+    suggestions: [{ text: "多讲卖点", basedOn: [] }],
+  }, strictByRef);
+  assert.equal(v.ok, false);
+  // 畸形条目（null）→ 返回失败而非抛异常
+  v = Analysis.validateModelOutput({
+    summary: "s", verification: "v",
+    evidence: [null], suggestions: [],
+  }, strictByRef);
+  assert.equal(v.ok, false);
+  // 空 evidence 数组 → 不通过
+  v = Analysis.validateModelOutput({
+    summary: "s", verification: "v",
+    evidence: [], suggestions: [],
+  }, strictByRef);
+  assert.equal(v.ok, false);
+
+  // 修5：会话隔离 — 两会话相同证据，并发结果不串 sessionId
+  const aiSess3 = "session_ai002test3";
+  const aiDir3 = path.join(dataDir, "sessions", aiSess3);
+  fs.mkdirSync(aiDir3, { recursive: true });
+  fs.writeFileSync(path.join(aiDir3, "session.json"), JSON.stringify({ sessionId: aiSess3, startTime: 1 }));
+  fs.writeFileSync(path.join(aiDir3, "transcript.jsonl"),
+    JSON.stringify({ offsetMs: 1000, text: "你好", status: "ok" }) + "\n");
+  const { evidenceHash: hash3 } = Analysis.collectEvidence(aiDir3, 0, 60000);
+  // 与 aiSess2 相同内容（aiSess2 已被删除，这里重建一个同内容会话做隔离测试太复杂；
+  // 直接验证 inflight 键包含 sessionId：同时发起两个不同会话的请求）
+  const aiSess4 = "session_ai002test4";
+  const aiDir4 = path.join(dataDir, "sessions", aiSess4);
+  fs.mkdirSync(aiDir4, { recursive: true });
+  fs.writeFileSync(path.join(aiDir4, "session.json"), JSON.stringify({ sessionId: aiSess4, startTime: 1 }));
+  fs.writeFileSync(path.join(aiDir4, "transcript.jsonl"),
+    JSON.stringify({ offsetMs: 1000, text: "你好", status: "ok" }) + "\n");
+  const { evidenceHash: hash4 } = Analysis.collectEvidence(aiDir4, 0, 60000);
+  assert.equal(hash3, hash4); // 证据相同，hash 相同
+  const [r3, r4] = await Promise.all([
+    Analysis.analyzeRange({
+      sessionDir: aiDir3, sessionId: aiSess3, rangeStartMs: 0, rangeEndMs: 60000,
+      evidenceHash: hash3, secrets: null,
+      rulesPath: path.join(root, "analysis-rules-v1.md"), mockMode: true,
+    }),
+    Analysis.analyzeRange({
+      sessionDir: aiDir4, sessionId: aiSess4, rangeStartMs: 0, rangeEndMs: 60000,
+      evidenceHash: hash4, secrets: null,
+      rulesPath: path.join(root, "analysis-rules-v1.md"), mockMode: true,
+    }),
+  ]);
+  assert.equal(r3.sessionId, aiSess3);
+  assert.equal(r4.sessionId, aiSess4);
+  assert.notEqual(r3.analysisId, r4.analysisId);
 
   console.log("✓ TASK-AI-002（单片段 AI 分析 mock）：全部通过");
 }

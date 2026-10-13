@@ -185,39 +185,57 @@ function buildCacheKey({ evidenceHash, model, provider, ruleHash, mockMode }) {
 // 并发去重：同缓存键共用一次模型调用
 const inflight = new Map();
 
-// ---------- 模型输出校验 ----------
+// ---------- 模型输出校验（Codex 评审：严格模式） ----------
 function validateModelOutput(result, evidenceByRef) {
   const errors = [];
-  if (!result || typeof result !== "object") return { ok: false, errors: ["结果不是对象"] };
-  for (const f of ["summary", "evidence", "suggestions", "verification"]) {
-    if (result[f] == null) errors.push(`缺少字段 ${f}`);
-  }
-  if (errors.length) return { ok: false, errors };
-  if (typeof result.summary !== "string" || typeof result.verification !== "string")
-    errors.push("summary/verification 必须是字符串");
-  if (!Array.isArray(result.evidence) || !Array.isArray(result.suggestions))
-    errors.push("evidence/suggestions 必须是数组");
-  if (result.summary && result.summary.length > MAX_FIELD_CHARS) errors.push("summary 超长");
-  if (result.verification && result.verification.length > MAX_FIELD_CHARS) errors.push("verification 超长");
-
-  // 引用校验：ref 必须存在，且时间和引文与源记录一致（引文允许模型截取片段，源文本包含引文即可）
-  const seenRefs = new Set();
-  for (const ev of result.evidence || []) {
-    if (!ev.ref || typeof ev.ref !== "string") { errors.push("evidence 缺少 ref"); continue; }
-    const src = evidenceByRef.get(ev.ref);
-    if (!src) { errors.push(`引用 ${ev.ref} 不存在`); continue; }
-    seenRefs.add(ev.ref);
-    if (ev.atMs != null && ev.atMs !== src.atMs) errors.push(`引用 ${ev.ref} 时间不一致`);
-    const quote = (ev.quote || "").trim();
-    const srcText = (src.text || src.name || String(src.online || "")).trim();
-    if (quote && srcText && !srcText.includes(quote) && !quote.includes(srcText.slice(0, 20)))
-      errors.push(`引用 ${ev.ref} 引文与源记录不一致`);
-  }
-  for (const s of result.suggestions || []) {
-    if (typeof s.text !== "string" || s.text.length > MAX_FIELD_CHARS) { errors.push("suggestion.text 非法"); continue; }
-    for (const r of (s.basedOn || [])) {
-      if (!evidenceByRef.has(r)) errors.push(`建议引用了不存在的 ${r}`);
+  try {
+    if (!result || typeof result !== "object" || Array.isArray(result))
+      return { ok: false, errors: ["结果不是对象"] };
+    for (const f of ["summary", "evidence", "suggestions", "verification"]) {
+      if (result[f] == null) errors.push(`缺少字段 ${f}`);
     }
+    if (errors.length) return { ok: false, errors };
+    if (typeof result.summary !== "string" || !result.summary.trim())
+      errors.push("summary 必须是非空字符串");
+    if (typeof result.verification !== "string" || !result.verification.trim())
+      errors.push("verification 必须是非空字符串");
+    if (!Array.isArray(result.evidence) || result.evidence.length === 0)
+      errors.push("evidence 必须是非空数组");
+    if (!Array.isArray(result.suggestions))
+      errors.push("suggestions 必须是数组");
+    if (result.summary && result.summary.length > MAX_FIELD_CHARS) errors.push("summary 超长");
+    if (result.verification && result.verification.length > MAX_FIELD_CHARS) errors.push("verification 超长");
+    if (errors.length) return { ok: false, errors };
+
+    // 引用校验：ref 存在；atMs 必填且一致；quote 必填且为源文本子串
+    for (const ev of result.evidence) {
+      if (!ev || typeof ev !== "object") { errors.push("evidence 条目非法"); continue; }
+      if (!ev.ref || typeof ev.ref !== "string") { errors.push("evidence 缺少 ref"); continue; }
+      const src = evidenceByRef.get(ev.ref);
+      if (!src) { errors.push(`引用 ${ev.ref} 不存在`); continue; }
+      if (typeof ev.atMs !== "number" || ev.atMs !== src.atMs)
+        errors.push(`引用 ${ev.ref} 缺少时间或时间不一致`);
+      const quote = typeof ev.quote === "string" ? ev.quote.trim() : "";
+      const srcText = String(src.text || src.name || (src.online != null ? src.online : "")).trim();
+      if (!quote) errors.push(`引用 ${ev.ref} 缺少引文`);
+      else if (!srcText || !srcText.includes(quote))
+        errors.push(`引用 ${ev.ref} 引文与源记录不一致`);
+    }
+    for (const s of result.suggestions) {
+      if (!s || typeof s !== "object") { errors.push("suggestion 条目非法"); continue; }
+      if (typeof s.text !== "string" || !s.text.trim() || s.text.length > MAX_FIELD_CHARS) {
+        errors.push("suggestion.text 非法"); continue;
+      }
+      if (!Array.isArray(s.basedOn) || s.basedOn.length === 0) {
+        errors.push("建议缺少证据依据（basedOn 非空）"); continue;
+      }
+      for (const r of s.basedOn) {
+        if (typeof r !== "string" || !evidenceByRef.has(r)) errors.push(`建议引用了不存在的 ${r}`);
+      }
+    }
+  } catch (e) {
+    // 畸形输出不能抛出未处理异常
+    return { ok: false, errors: ["输出结构异常，无法校验"] };
   }
   return { ok: errors.length === 0, errors };
 }
@@ -288,11 +306,13 @@ function callDeepSeek({ apiBase, apiKey, model, prompt, timeoutMs }) {
 }
 
 function mockResult(evidence) {
-  const first = evidence.transcripts[0];
+  // 调用前已保证 hasAnalyzable，first 必存在
+  const first = evidence.transcripts[0] || evidence.danmaku[0] || evidence.products[0] || evidence.online[0];
+  const firstText = String(first.text || first.name || first.online || "").slice(0, 30);
   return {
     summary: `MOCK：本段 ${evidence.range.label} 共有转写 ${evidence.transcripts.length} 条、弹幕 ${evidence.danmaku.length} 条${evidence.contextProduct ? `，起点商品为${evidence.contextProduct.name}` : ""}。`,
-    evidence: first ? [{ ref: first.ref, atMs: first.atMs, quote: first.text.slice(0, 30) }] : [],
-    suggestions: [{ text: "MOCK 建议：此处应为基于证据的具体动作", basedOn: first ? [first.ref] : [] }],
+    evidence: [{ ref: first.ref, atMs: first.atMs, quote: firstText }],
+    suggestions: [{ text: "MOCK 建议：此处应为基于证据的具体动作", basedOn: [first.ref] }],
     verification: "MOCK：下次观察对应指标变化",
   };
 }
@@ -309,8 +329,10 @@ async function analyzeRange(opts) {
 
   const { evidence, evidenceHash, totalChars } = collectEvidence(sessionDir, rangeStartMs, rangeEndMs);
 
-  // preview hash 一致性：证据已变化则要求重新确认
-  if (clientHash && clientHash !== evidenceHash)
+  // 确认校验：必须携带 preview 的 hash，且严格匹配（Codex 评审：不可绕过）
+  if (!clientHash || typeof clientHash !== "string")
+    throw Object.assign(new Error("请先预览确认后再分析"), { code: "HASH_REQUIRED" });
+  if (clientHash !== evidenceHash)
     throw Object.assign(new Error("证据已变化，请重新确认后再分析"), { code: "EVIDENCE_CHANGED" });
 
   // 无可分析内容：不付费调用
@@ -333,13 +355,17 @@ async function analyzeRange(opts) {
     return { ...cached, cached: true };
   }
 
-  // 并发去重
-  if (inflight.has(cacheKey)) return inflight.get(cacheKey);
+  // 并发去重：同缓存键共用一次模型调用；键包含会话身份做隔离（Codex 评审）
+  const inflightKey = sessionId + "|" + cacheKey;
+  if (inflight.has(inflightKey)) return inflight.get(inflightKey);
   const job = (async () => {
     let result, usage = {}, isMock = false;
-    if (mockMode || !secrets || !secrets.apiKey) {
+    // Codex 评审：只有测试模式才允许 mock；正常模式缺密钥直接中文报错，不自动降级
+    if (mockMode) {
       result = mockResult(evidence);
       isMock = true;
+    } else if (!secrets || !secrets.apiKey) {
+      throw Object.assign(new Error("尚未配置分析 API，请先在应用数据目录创建 analysis-secrets.json 并填入 DeepSeek 密钥"), { code: "NO_API_KEY" });
     } else {
       const rulesText = fs.readFileSync(rulesPath, "utf8");
       const prompt = buildPrompt(evidence, rulesText);
@@ -381,11 +407,11 @@ async function analyzeRange(opts) {
       JSON.stringify(analysis, null, 1));
     return { ...analysis, cached: false };
   })();
-  inflight.set(cacheKey, job);
+  inflight.set(inflightKey, job);
   try {
     return await job;
   } finally {
-    inflight.delete(cacheKey);
+    inflight.delete(inflightKey);
   }
 }
 
