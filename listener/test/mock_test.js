@@ -745,6 +745,157 @@ async function run() {
   result = await request("POST", "/session/stop", { sessionId: stSessC });
   assert.equal(result.status, 200);
   console.log("✓ TASK-STORAGE-001（存储管理）：全部通过");
+
+  // TASK-AI-002：单片段 AI 分析（mock 模式，不调用真实接口）
+  await testAI002();
+}
+
+async function testAI002() {
+  const Analysis = require("../analysis");
+  const aiSess = "session_ai002test1";
+  const aiDir = path.join(dataDir, "sessions", aiSess);
+  fs.mkdirSync(aiDir, { recursive: true });
+  const jl = (f, arr) => fs.writeFileSync(path.join(aiDir, f),
+    arr.map(o => JSON.stringify(o)).join("\n") + "\n");
+  fs.writeFileSync(path.join(aiDir, "session.json"), JSON.stringify({
+    sessionId: aiSess, startTime: 1000000, endTime: 2000000,
+  }));
+  // 转写 3 条（含 1 条 mock）、弹幕 2 条（同一秒 2 条，测 ref 唯一性）
+  jl("transcript.jsonl", [
+    { offsetMs: 100000, text: "这个花色真的绝了", mock: false, status: "ok" },
+    { offsetMs: 120000, text: "模拟话术一条", mock: true, status: "ok" },
+    { offsetMs: 150000, text: "现在拍是这个价格", status: "ok" },
+  ]);
+  jl("danmaku.jsonl", [
+    { offsetMs: 110000, userName: "用户A", text: "求链接", tag: "audience" },
+    { offsetMs: 110000, userName: "用户B", text: "多少钱", tag: "audience" },
+  ]);
+  // 商品：0 秒换品，50 秒价格更新；分析范围 100-180 秒 → 起点商品应带最新价格
+  jl("product.jsonl", [
+    { offsetMs: 0, type: "product_switch", product: { name: "测试围巾", priceText: "¥299" } },
+    { offsetMs: 50000, type: "price_update", product: { name: "测试围巾", priceText: "券后价¥279" } },
+  ]);
+  jl("visual.jsonl", [
+    { offsetMs: 100000, metrics: { online: 100 }, framePath: null },
+    { offsetMs: 160000, metrics: { online: 120 }, framePath: null },
+  ]);
+
+  // AI-02：起点商品含最新价格
+  const { evidence, evidenceHash } = Analysis.collectEvidence(aiDir, 100000, 180000);
+  assert.equal(evidence.contextProduct.name, "测试围巾");
+  assert.equal(evidence.contextProduct.priceText, "券后价¥279");
+  assert.ok(evidence.contextProduct.note.includes("最近识别到"));
+  // AI-02b：同一秒两条弹幕 ref 唯一
+  const dRefs = evidence.danmaku.map(d => d.ref);
+  assert.equal(new Set(dRefs).size, 2);
+  // 弹幕用户名默认不发送
+  assert.ok(!("userName" in evidence.danmaku[0]) && !("user" in evidence.danmaku[0]));
+  // 质量标记
+  assert.equal(evidence.transcripts.find(t => t.quality === "mock").quality, "mock");
+  assert.equal(evidence.transcripts.find(t => t.quality === "real").quality, "real");
+
+  // AI-04：preview 返回条数与缺失项
+  let result = await request("POST", "/api/analysis/preview",
+    { sessionId: aiSess, rangeStartMs: 100000, rangeEndMs: 180000 });
+  assert.equal(result.status, 200);
+  const preview = JSON.parse(result.body).preview;
+  assert.equal(preview.counts.transcript, 3);
+  assert.equal(preview.counts.danmaku, 2);
+  assert.equal(preview.evidenceHash, evidenceHash);
+  assert.equal(preview.hasAnalyzable, true);
+
+  // AI-04b：空范围 → hasAnalyzable=false，analyze 不调用
+  result = await request("POST", "/api/analysis/preview",
+    { sessionId: aiSess, rangeStartMs: 500000, rangeEndMs: 600000 });
+  assert.equal(JSON.parse(result.body).preview.hasAnalyzable, false);
+  result = await request("POST", "/api/analyze",
+    { sessionId: aiSess, rangeStartMs: 500000, rangeEndMs: 600000 });
+  assert.equal(result.status, 400);
+  assert.ok(JSON.parse(result.body).error.includes("无转写"));
+
+  // AI-07：mock 分析（测试模式），MOCK 明示
+  result = await request("POST", "/api/analyze",
+    { sessionId: aiSess, rangeStartMs: 100000, rangeEndMs: 180000, evidenceHash });
+  assert.equal(result.status, 200);
+  const an1 = JSON.parse(result.body).analysis;
+  assert.equal(an1.mock, true);
+  assert.ok(an1.result.summary && an1.result.evidence && an1.result.suggestions && an1.result.verification);
+  assert.ok(an1.analysisId.startsWith("an_"));
+
+  // AI-06：缓存命中不重复调用
+  result = await request("POST", "/api/analyze",
+    { sessionId: aiSess, rangeStartMs: 100000, rangeEndMs: 180000, evidenceHash });
+  assert.equal(JSON.parse(result.body).analysis.cached, true);
+
+  // AI-01/04c：证据变化 → 409 要求重新确认
+  jl("danmaku.jsonl", [
+    { offsetMs: 110000, userName: "用户A", text: "求链接", tag: "audience" },
+    { offsetMs: 110000, userName: "用户B", text: "多少钱", tag: "audience" },
+    { offsetMs: 130000, userName: "用户C", text: "新弹幕", tag: "audience" },
+  ]);
+  result = await request("POST", "/api/analyze",
+    { sessionId: aiSess, rangeStartMs: 100000, rangeEndMs: 180000, evidenceHash });
+  assert.equal(result.status, 409);
+  assert.equal(JSON.parse(result.body).code, "EVIDENCE_CHANGED");
+
+  // AI-03：引用校验 — 不存在的 ref / 时间不一致 / 引文不一致
+  const byRef = Analysis.buildEvidenceByRef(evidence);
+  let v = Analysis.validateModelOutput({
+    summary: "s", verification: "v",
+    evidence: [{ ref: "t_9999", atMs: 1, quote: "x" }],
+    suggestions: [],
+  }, byRef);
+  assert.equal(v.ok, false);
+  v = Analysis.validateModelOutput({
+    summary: "s", verification: "v",
+    evidence: [{ ref: "t_0001", atMs: 999999, quote: "这个花色真的绝了" }],
+    suggestions: [],
+  }, byRef);
+  assert.equal(v.ok, false); // 时间不一致
+  v = Analysis.validateModelOutput({
+    summary: "s", verification: "v",
+    evidence: [{ ref: "t_0001", atMs: 100000, quote: "这个花色真的绝了" }],
+    suggestions: [{ text: "多讲卖点", basedOn: ["t_0001"] }],
+  }, byRef);
+  assert.equal(v.ok, true);
+
+  // AI-07b：反馈独立文件保存
+  result = await request("POST", "/api/analysis/feedback",
+    { sessionId: aiSess, analysisId: an1.analysisId, type: "useful", note: "靠谱" });
+  assert.equal(result.status, 200);
+  const fbFile = path.join(aiDir, "analysis", "feedback", an1.analysisId + ".jsonl");
+  assert.ok(fs.existsSync(fbFile));
+  assert.ok(fs.readFileSync(fbFile, "utf8").includes("靠谱"));
+  // 反馈不嵌入分析结果文件
+  const saved = JSON.parse(fs.readFileSync(
+    path.join(aiDir, "analysis", an1.analysisId + ".json"), "utf8"));
+  assert.ok(!saved.feedback);
+
+  // AI-05：删除并发 — 会话删除后分析不复活目录
+  const aiSess2 = "session_ai002test2";
+  const aiDir2 = path.join(dataDir, "sessions", aiSess2);
+  fs.mkdirSync(aiDir2, { recursive: true });
+  fs.writeFileSync(path.join(aiDir2, "session.json"), JSON.stringify({ sessionId: aiSess2, startTime: 1 }));
+  fs.writeFileSync(path.join(aiDir2, "transcript.jsonl"),
+    JSON.stringify({ offsetMs: 1000, text: "你好", status: "ok" }) + "\n");
+  // 模拟删除发生在保存前：直接调 analyzeRange，期间删除目录
+  const p = Analysis.analyzeRange({
+    sessionDir: aiDir2, sessionId: aiSess2,
+    rangeStartMs: 0, rangeEndMs: 60000, evidenceHash: null,
+    secrets: null, rulesPath: path.join(root, "analysis-rules-v1.md"), mockMode: true,
+  });
+  fs.rmSync(aiDir2, { recursive: true, force: true }); // 并发删除
+  let goneErr = null;
+  try { await p; } catch (e) { goneErr = e; }
+  assert.ok(goneErr && goneErr.code === "SESSION_GONE");
+  assert.ok(!fs.existsSync(aiDir2), "删除后不应重建目录");
+
+  // 非法 analysisId → 400
+  result = await request("POST", "/api/analysis/feedback",
+    { sessionId: aiSess, analysisId: "../../x", type: "useful" });
+  assert.equal(result.status, 400);
+
+  console.log("✓ TASK-AI-002（单片段 AI 分析 mock）：全部通过");
 }
 
 run().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => {

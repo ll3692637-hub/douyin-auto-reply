@@ -28,6 +28,33 @@ const SESSIONS_DIR = path.join(APP_SUPPORT, "sessions");
 const PROFILES_DIR = path.join(__dirname, "profiles");
 // 账号名单（用户私有配置，不提交；见 accounts.example.json）
 const ACCOUNTS_PATH = path.join(__dirname, "accounts.json");
+// TASK-AI-002：分析密钥独立文件，与 asr-secrets.json 彻底分开
+const ANALYSIS_SECRETS_PATH = path.join(APP_SUPPORT, "analysis-secrets.json");
+const ANALYSIS_RULES_PATH = path.join(__dirname, "analysis-rules-v1.md");
+const Analysis = require("./analysis");
+
+let cachedAnalysisSecrets = null; // null=未加载过；false=无文件/无效；object=已加载
+function loadAnalysisSecrets() {
+  if (cachedAnalysisSecrets !== null) return cachedAnalysisSecrets || null;
+  try {
+    const raw = fs.readFileSync(ANALYSIS_SECRETS_PATH, "utf-8");
+    const p = JSON.parse(raw);
+    if (!p.apiKey) throw new Error("no apiKey");
+    cachedAnalysisSecrets = {
+      provider: p.provider || "deepseek",
+      apiBase: p.apiBase || "https://api.deepseek.com",
+      model: p.model || "deepseek-chat",
+      apiKey: p.apiKey,
+    };
+    return cachedAnalysisSecrets;
+  } catch (e) {
+    cachedAnalysisSecrets = false;
+    return null;
+  }
+}
+function analysisSecretsConfigured() {
+  return !!loadAnalysisSecrets();
+}
 
 const { washText } = require("./textnorm");
 
@@ -921,6 +948,110 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, list: listDiagnostics() });
     } catch (e) {
       return sendJson(res, 400, { ok: false, error: safeError(e) });
+    }
+    return;
+  }
+
+  // ============ TASK-AI-002：单片段 AI 分析 ============
+  // POST /api/analysis/preview - 证据预览（不调用模型）
+  if (req.method === "POST" && req.url === "/api/analysis/preview") {
+    try {
+      const body = await readJsonBody(req);
+      assertSessionId(body.sessionId);
+      const rs = Number(body.rangeStartMs), re = Number(body.rangeEndMs);
+      if (!Number.isFinite(rs) || !Number.isFinite(re) || rs < 0 || re <= rs || re - rs > 2 * 3600000)
+        throw new Error("分析范围非法（需 0 < 时长 ≤ 2 小时）");
+      const sessionDir = path.join(SESSIONS_DIR, body.sessionId);
+      if (!fs.existsSync(path.join(sessionDir, "session.json")))
+        return sendJson(res, 404, { ok: false, error: "会话不存在" });
+      const { evidence, evidenceHash } = Analysis.collectEvidence(sessionDir, rs, re);
+      return sendJson(res, 200, {
+        ok: true,
+        preview: Analysis.previewSummary(evidence, evidenceHash),
+        secretsConfigured: analysisSecretsConfigured(),
+        testMode: process.env.LISTENER_TEST_MODE === "1",
+      });
+    } catch (e) {
+      return sendJson(res, 400, { ok: false, error: safeError(e) });
+    }
+    return;
+  }
+
+  // POST /api/analyze - 发起分析（需携带 preview 的 evidenceHash）
+  if (req.method === "POST" && req.url === "/api/analyze") {
+    try {
+      const body = await readJsonBody(req);
+      assertSessionId(body.sessionId);
+      const rs = Number(body.rangeStartMs), re = Number(body.rangeEndMs);
+      if (!Number.isFinite(rs) || !Number.isFinite(re) || rs < 0 || re <= rs || re - rs > 2 * 3600000)
+        throw new Error("分析范围非法（需 0 < 时长 ≤ 2 小时）");
+      const sessionDir = path.join(SESSIONS_DIR, body.sessionId);
+      const mockMode = process.env.LISTENER_TEST_MODE === "1";
+      const secrets = mockMode ? null : loadAnalysisSecrets();
+      const analysis = await Analysis.analyzeRange({
+        sessionDir,
+        sessionId: body.sessionId,
+        rangeStartMs: rs, rangeEndMs: re,
+        evidenceHash: body.evidenceHash || null,
+        secrets,
+        rulesPath: ANALYSIS_RULES_PATH,
+        mockMode,
+      });
+      return sendJson(res, 200, { ok: true, analysis });
+    } catch (e) {
+      const code = e.code || "";
+      const status = code === "SESSION_GONE" ? 404 : code === "EVIDENCE_CHANGED" ? 409 : 400;
+      return sendJson(res, status, { ok: false, error: safeError(e), code });
+    }
+    return;
+  }
+
+  // GET /api/analysis?sessionId= - 分析列表
+  if (req.method === "GET" && req.url.startsWith("/api/analysis?")) {
+    try {
+      const u = new URL(req.url, `http://${HOST}:${PORT}`);
+      const sessionId = u.searchParams.get("sessionId") || "";
+      assertSessionId(sessionId);
+      const sessionDir = path.join(SESSIONS_DIR, sessionId);
+      return sendJson(res, 200, { ok: true, list: Analysis.listAnalyses(sessionDir) });
+    } catch (e) {
+      return sendJson(res, 400, { ok: false, error: safeError(e) });
+    }
+    return;
+  }
+
+  // GET /api/analysis/detail?sessionId=&analysisId= - 单条完整分析
+  if (req.method === "GET" && req.url.startsWith("/api/analysis/detail")) {
+    try {
+      const u = new URL(req.url, `http://${HOST}:${PORT}`);
+      const sessionId = u.searchParams.get("sessionId") || "";
+      const analysisId = u.searchParams.get("analysisId") || "";
+      assertSessionId(sessionId);
+      if (!/^an_[A-Za-z0-9]{4,32}$/.test(analysisId)) throw new Error("invalid analysisId");
+      const a = Analysis.getAnalysis(path.join(SESSIONS_DIR, sessionId), analysisId);
+      if (!a) return sendJson(res, 404, { ok: false, error: "分析不存在" });
+      const feedback = Analysis.listFeedback(path.join(SESSIONS_DIR, sessionId), analysisId);
+      return sendJson(res, 200, { ok: true, analysis: a, feedback });
+    } catch (e) {
+      return sendJson(res, 400, { ok: false, error: safeError(e) });
+    }
+    return;
+  }
+
+  // POST /api/analysis/feedback - 保存反馈（独立文件）
+  if (req.method === "POST" && req.url === "/api/analysis/feedback") {
+    try {
+      const body = await readJsonBody(req);
+      assertSessionId(body.sessionId);
+      if (!/^an_[A-Za-z0-9]{4,32}$/.test(body.analysisId || "")) throw new Error("invalid analysisId");
+      const entry = Analysis.saveFeedback(
+        path.join(SESSIONS_DIR, body.sessionId),
+        body.analysisId, body.type, body.note
+      );
+      return sendJson(res, 200, { ok: true, feedback: entry });
+    } catch (e) {
+      const status = e.code === "SESSION_GONE" ? 404 : 400;
+      return sendJson(res, status, { ok: false, error: safeError(e) });
     }
     return;
   }

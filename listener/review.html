@@ -723,10 +723,211 @@ function renderDetailRange(sessionId, tlWithDelta) {
     el.addEventListener("click", () => openShotLightbox(sessionId, el.dataset.file, +el.dataset.at));
   });
 
-  // 右：分析（TASK-AI-002 接入前显示"尚未分析"）
-  $("tlAnalysis").innerHTML = `<div class="nodata">尚未分析</div>
-    <button disabled title="AI 分析即将上线（TASK-AI-002）"
-      style="margin-top:6px;padding:6px 16px;font-size:13px;border:1px solid #ddd;border-radius:6px;background:#f5f5f5;color:#999;cursor:not-allowed">分析这段</button>`;
+  // 右：分析（TASK-AI-002）
+  renderAnalysisPanel(sessionId);
+}
+
+// ============ TASK-AI-002：分析面板 ============
+let analyzing = false; // 防重复点击
+let currentPreview = null;
+
+function renderAnalysisPanel(sessionId) {
+  const rangeLabel = tlRange ? `${fmtMs(tlRange.start)} – ${fmtMs(tlRange.end)}` : "未选范围";
+  $("tlAnalysis").innerHTML = `
+    <div style="font-size:12px;color:#666;margin-bottom:6px">范围：${esc(rangeLabel)}</div>
+    <button id="tlAnalyzeBtn" ${!tlRange || analyzing ? "disabled" : ""}
+      style="padding:8px 20px;font-size:13px;border:none;border-radius:10px;cursor:${!tlRange || analyzing ? "not-allowed" : "pointer"};
+      background:${!tlRange || analyzing ? "#f0f0f0" : "#2196F3"};color:${!tlRange || analyzing ? "#999" : "#fff"}">
+      ${analyzing ? "分析中…" : "分析这段"}</button>
+    <div id="tlAnalysisList" style="margin-top:8px"></div>
+    <div id="tlAnalysisResult" style="margin-top:8px"></div>`;
+  const btn = $("tlAnalyzeBtn");
+  if (btn && tlRange && !analyzing) btn.addEventListener("click", () => doAnalysisPreview(sessionId));
+  loadAnalysisList(sessionId);
+}
+
+async function loadAnalysisList(sessionId) {
+  try {
+    const r = await fetch(`/api/analysis?sessionId=${encodeURIComponent(sessionId)}`);
+    const d = await r.json();
+    if (!d.ok || !d.list.length) return;
+    $("tlAnalysisList").innerHTML = `<div style="font-size:12px;color:#999;margin:6px 0">历史分析（${d.list.length}）</div>` +
+      d.list.map(a => `<div class="search-match" data-aid="${esc(a.analysisId)}">
+        <span class="t">${esc(a.rangeLabel)}</span>${a.mock ? '<span class="badge" style="background:#fff3e0;color:#e65100">MOCK</span>' : ""}
+        ${esc(a.summary.slice(0, 40))}…</div>`).join("");
+    $("tlAnalysisList").querySelectorAll(".search-match").forEach(el => {
+      el.addEventListener("click", () => loadAnalysisDetail(sessionId, el.dataset.aid));
+    });
+  } catch (e) { /* 静默 */ }
+}
+
+async function loadAnalysisDetail(sessionId, analysisId) {
+  try {
+    const r = await fetch(`/api/analysis/detail?sessionId=${encodeURIComponent(sessionId)}&analysisId=${encodeURIComponent(analysisId)}`);
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error);
+    renderAnalysisResult(sessionId, d.analysis, d.feedback);
+  } catch (e) {
+    $("tlAnalysisResult").innerHTML = `<div class="nodata">加载失败：${esc(e.message)}</div>`;
+  }
+}
+
+async function doAnalysisPreview(sessionId) {
+  if (analyzing || !tlRange) return;
+  analyzing = true;
+  renderAnalysisPanel(sessionId);
+  try {
+    const r = await fetch("/api/analysis/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId, rangeStartMs: tlRange.start, rangeEndMs: tlRange.end }),
+    });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error);
+    currentPreview = d.preview;
+    const p = d.preview;
+    if (!p.hasAnalyzable) {
+      $("tlAnalysisResult").innerHTML = `<div class="nodata">本范围无转写、弹幕、商品、在线数据可分析，不会调用模型。</div>`;
+      analyzing = false;
+      renderAnalysisPanel(sessionId);
+      return;
+    }
+    const missingTxt = p.missing.length ? `缺失：${p.missing.join("、")}` : "数据齐全";
+    const cfgTxt = d.secretsConfigured ? "已配置分析 API" : (d.testMode ? "测试模式（MOCK，不计费）" : "未配置分析 API（将使用 MOCK，不计费）");
+    $("tlAnalysisResult").innerHTML = `
+      <div class="card" style="background:#f8fbff;border:1px solid #e3f2fd;margin:0">
+        <div style="font-size:13px;margin-bottom:6px"><b>将发送给 AI 的数据</b>（${esc(p.range.label)}）</div>
+        <div style="font-size:12px;color:#555;line-height:1.8">
+          转写 ${p.counts.transcript} 条 · 弹幕 ${p.counts.danmaku} 条 · 商品事件 ${p.counts.product} 个 ·
+          在线采样 ${p.counts.online} 个${p.counts.contextProduct ? " · 含起点商品上下文" : ""}<br>
+          ${esc(missingTxt)}<br>
+          <span style="color:#999">截图不发送；弹幕用户名不发送</span><br>
+          ${esc(cfgTxt)}
+        </div>
+        <div style="margin-top:8px;display:flex;gap:8px">
+          <button id="tlConfirmAnalyze" style="padding:8px 20px;font-size:13px;border:none;border-radius:10px;background:#2196F3;color:#fff;cursor:pointer">确认分析</button>
+          <button id="tlCancelAnalyze" style="padding:8px 16px;font-size:13px;border:1px solid #ddd;border-radius:10px;background:#fff;cursor:pointer">取消</button>
+        </div>
+      </div>`;
+    $("tlConfirmAnalyze").addEventListener("click", () => doAnalyze(sessionId, p.evidenceHash));
+    $("tlCancelAnalyze").addEventListener("click", () => { analyzing = false; renderAnalysisPanel(sessionId); });
+  } catch (e) {
+    $("tlAnalysisResult").innerHTML = `<div class="nodata">预览失败：${esc(e.message)}</div>`;
+    analyzing = false;
+    renderAnalysisPanel(sessionId);
+  }
+}
+
+async function doAnalyze(sessionId, evidenceHash) {
+  $("tlAnalysisResult").innerHTML = `<div class="nodata">分析中，请稍候…（30 秒超时）</div>`;
+  try {
+    const r = await fetch("/api/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId, rangeStartMs: tlRange.start, rangeEndMs: tlRange.end, evidenceHash }),
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      if (d.code === "EVIDENCE_CHANGED") {
+        $("tlAnalysisResult").innerHTML = `<div class="nodata">证据已变化，请<button id="tlRePreview" style="margin:0 4px;padding:4px 12px;font-size:12px;border:1px solid #ddd;border-radius:8px;background:#fff;cursor:pointer">重新确认</button>后再分析。</div>`;
+        $("tlRePreview").addEventListener("click", () => doAnalysisPreview(sessionId));
+      } else {
+        $("tlAnalysisResult").innerHTML = `<div class="nodata">分析失败：${esc(d.error)}
+          <button id="tlRetry" style="margin-left:8px;padding:4px 12px;font-size:12px;border:1px solid #ddd;border-radius:8px;background:#fff;cursor:pointer">重试</button></div>`;
+        $("tlRetry").addEventListener("click", () => doAnalysisPreview(sessionId));
+      }
+      analyzing = false;
+      renderAnalysisPanel(sessionId);
+      // 保留结果区，只刷新按钮
+      return;
+    }
+    analyzing = false;
+    renderAnalysisPanel(sessionId);
+    renderAnalysisResult(sessionId, d.analysis, []);
+    loadAnalysisList(sessionId);
+  } catch (e) {
+    $("tlAnalysisResult").innerHTML = `<div class="nodata">请求失败：${esc(e.message)}</div>`;
+    analyzing = false;
+    renderAnalysisPanel(sessionId);
+  }
+}
+
+// 证据 ref → atMs 映射（用于点击定位）
+let refAtMsMap = {};
+
+function renderAnalysisResult(sessionId, a, feedback) {
+  const r = a.result || {};
+  refAtMsMap = {};
+  (r.evidence || []).forEach(ev => { if (ev.ref && ev.atMs != null) refAtMsMap[ev.ref] = ev.atMs; });
+  const evHtml = (r.evidence || []).map(ev =>
+    `<div class="search-match" data-ref="${esc(ev.ref)}">
+      <span class="t">${esc(ev.ref)}</span>${esc(ev.quote || "")}</div>`).join("");
+  const sugHtml = (r.suggestions || []).map(s =>
+    `<div style="font-size:13px;margin-bottom:8px">• ${esc(s.text)}
+      ${(s.basedOn || []).map(b => `<span class="t" style="color:#999;font-size:11px;margin-left:6px">${esc(b)}</span>`).join("")}</div>`).join("");
+  const fbHtml = (feedback || []).map(f =>
+    `<div style="font-size:12px;color:#666">【${f.type === "useful" ? "有用" : "不准确"}】${esc(f.note || "")} <span style="color:#ccc">${esc((f.at || "").slice(0, 16))}</span></div>`).join("");
+  $("tlAnalysisResult").innerHTML = `
+    <div class="card" style="background:#fff;border:1px solid #e8e8e8;margin:0">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <b style="font-size:14px">AI 分析</b>
+        ${a.mock ? '<span class="badge" style="background:#fff3e0;color:#e65100">MOCK</span>' : ""}
+        ${a.cached ? '<span class="badge" style="background:#e8f5e9;color:#2e7d32">缓存</span>' : ""}
+        <span style="font-size:11px;color:#999">${esc(a.rangeLabel)} · ${esc(a.model)} · ${esc(a.ruleVersion)}</span>
+      </div>
+      <h4 style="margin:10px 0 4px">这段发生了什么</h4>
+      <div style="font-size:13px;line-height:1.7">${esc(r.summary || "—")}</div>
+      <h4 style="margin:10px 0 4px">原始证据（点击定位）</h4>
+      <div>${evHtml || '<div class="nodata">无</div>'}</div>
+      <h4 style="margin:10px 0 4px">建议怎么改</h4>
+      <div>${sugHtml || '<div class="nodata">无</div>'}</div>
+      <h4 style="margin:10px 0 4px">下次怎么验证</h4>
+      <div style="font-size:13px;line-height:1.7">${esc(r.verification || "—")}</div>
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="fb-btn" data-t="useful" style="padding:5px 14px;font-size:12px;border:1px solid #ddd;border-radius:8px;background:#fff;cursor:pointer">有用</button>
+        <button class="fb-btn" data-t="inaccurate" style="padding:5px 14px;font-size:12px;border:1px solid #ddd;border-radius:8px;background:#fff;cursor:pointer">不准确</button>
+        <input id="fbNote" type="text" placeholder="备注（可选）" style="padding:5px 8px;font-size:12px;border:1px solid #ddd;border-radius:8px;width:140px">
+      </div>
+      <div id="fbList" style="margin-top:6px">${fbHtml}</div>
+    </div>`;
+  $("tlAnalysisResult").querySelectorAll("[data-ref]").forEach(el => {
+    el.addEventListener("click", () => {
+      const atMs = refAtMsMap[el.dataset.ref];
+      if (atMs != null && tlInstance) {
+        tlInstance.setCursor(atMs);
+        tlRange = { start: Math.max(0, atMs - 60000), end: atMs + 60000 };
+        tlInstance.setSelection(tlRange.start, tlRange.end);
+        tlEvPage = 0;
+        // 重新加载当前会话详情的证据区（不整页刷新）
+        const sid = currentSessionId;
+        fetch(`/api/session?id=${encodeURIComponent(sid)}`).then(x => x.json()).then(d => {
+          if (d.ok) {
+            const tl = (d.timeline || []).filter(x => showKind === "all" || x.kind === showKind);
+            renderDetailRange(sid, tl);
+            renderAnalysisPanel(sid);
+            renderAnalysisResult(sid, a, feedback);
+          }
+        });
+      }
+    });
+  });
+  $("tlAnalysisResult").querySelectorAll(".fb-btn").forEach(b => {
+    b.addEventListener("click", async () => {
+      const note = $("fbNote") ? $("fbNote").value.trim() : "";
+      try {
+        const rr = await fetch("/api/analysis/feedback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId, analysisId: a.analysisId, type: b.dataset.t, note }),
+        });
+        const dd = await rr.json();
+        if (!dd.ok) throw new Error(dd.error);
+        loadAnalysisDetail(sessionId, a.analysisId); // 刷新反馈列表
+      } catch (e) {
+        alert("反馈保存失败：" + e.message);
+      }
+    });
+  });
 }
 
 async function loadDetail(sessionId) {
