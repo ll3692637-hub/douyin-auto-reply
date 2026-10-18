@@ -18,10 +18,13 @@ const path = require("path");
 const crypto = require("crypto");
 const https = require("https");
 
-const RULE_VERSION = "ai-rules-v1";
+const RULE_VERSION = "ai-rules-base-v1+scarf-v1";
 const MAX_EVIDENCE_CHARS = 20000;
 const MODEL_TIMEOUT_MS = 30000;
 const MAX_FIELD_CHARS = 4000; // 模型单字段长度上限
+const PROBLEM_TYPES = ["filler", "imagery", "engagement"]; // 无效口水话/美感没讲出来/缺少观众参与感
+// 可复用骨架空洞模式：只由通用大词和连接符组成、没有具体槽位
+const EMPTY_FRAME_RE = /^[\s\u3000痛点卖点促单钩子逼单开场收尾种草转化话术、，,+.＋\/\\|-]+$/;
 
 function sha256(s) {
   return crypto.createHash("sha256").update(s, "utf8").digest("hex");
@@ -60,13 +63,17 @@ function collectEvidence(sessionDir, rangeStartMs, rangeEndMs) {
     if (!text) continue;
     transcripts.push({ atMs: at, text, quality: qualityOf(t) });
   }
-  // 弹幕（范围内；用户名默认不发送）
+  // 弹幕（范围内；用户名默认不发送；主播号/运营号打 isStaff 标记，不当作自然观众需求）
   for (const d of readJsonl(path.join(sessionDir, "danmaku.jsonl"))) {
     const at = d.offsetMs;
     if (at == null || at < rangeStartMs || at >= rangeEndMs) continue;
     const text = (d.text || "").trim();
     if (!text) continue;
-    danmaku.push({ atMs: at, text, quality: qualityOf(d) });
+    const role = d.role || "audience";
+    danmaku.push({
+      atMs: at, text, quality: qualityOf(d),
+      isStaff: role === "anchor" || role === "water_army",
+    });
   }
   // 商品/价格（范围内）
   const prodNodes = readJsonl(path.join(sessionDir, "product.jsonl"));
@@ -170,9 +177,11 @@ function previewSummary(evidence, evidenceHash) {
 }
 
 // ---------- 缓存 ----------
-function ruleContentHash(rulesPath) {
+// 规则内容哈希：base（事实边界）+ scarf（类目档案）两个文件全部计入
+function ruleContentHash(rulesPaths) {
+  const paths = Array.isArray(rulesPaths) ? rulesPaths : [rulesPaths];
   try {
-    return sha256(fs.readFileSync(rulesPath, "utf8"));
+    return sha256(paths.map(p => fs.readFileSync(p, "utf8")).join("\n---\n"));
   } catch {
     return "no-rules-file";
   }
@@ -185,13 +194,30 @@ function buildCacheKey({ evidenceHash, model, provider, ruleHash, mockMode }) {
 // 并发去重：同缓存键共用一次模型调用
 const inflight = new Map();
 
-// ---------- 模型输出校验（Codex 评审：严格模式） ----------
+// ---------- 模型输出校验（分析标准 v0.1） ----------
+// 服务端根据 refs 自动拼接还原完整上下文原话与起止毫秒时间，模型不自己拼长句
+function enrichRefs(item, evidenceByRef) {
+  const srcs = item.refs.map(r => evidenceByRef.get(r)).filter(Boolean);
+  srcs.sort((a, b) => a.atMs - b.atMs);
+  const texts = srcs.map(s => String(s.text || s.name || (s.online != null ? s.online : "")).trim());
+  item.text = texts.join("");
+  item.startMs = srcs[0].atMs;
+  item.endMs = srcs[srcs.length - 1].atMs;
+  item.startLabel = fmtLabel(item.startMs);
+  item.endLabel = fmtLabel(item.endMs);
+  item.refCount = srcs.length;
+}
+
+function refPrefix(ref) {
+  return ref.split("_")[0];
+}
+
 function validateModelOutput(result, evidenceByRef) {
   const errors = [];
   try {
     if (!result || typeof result !== "object" || Array.isArray(result))
       return { ok: false, errors: ["结果不是对象"] };
-    for (const f of ["summary", "evidence", "suggestions", "verification"]) {
+    for (const f of ["summary", "goodScripts", "problems", "verification"]) {
       if (result[f] == null) errors.push(`缺少字段 ${f}`);
     }
     if (errors.length) return { ok: false, errors };
@@ -199,38 +225,53 @@ function validateModelOutput(result, evidenceByRef) {
       errors.push("summary 必须是非空字符串");
     if (typeof result.verification !== "string" || !result.verification.trim())
       errors.push("verification 必须是非空字符串");
-    if (!Array.isArray(result.evidence) || result.evidence.length === 0)
-      errors.push("evidence 必须是非空数组");
-    if (!Array.isArray(result.suggestions))
-      errors.push("suggestions 必须是数组");
+    // 好话术 / 问题数组允许为空（确实没有就不硬凑），但必须为数组
+    if (!Array.isArray(result.goodScripts)) errors.push("goodScripts 必须是数组");
+    if (!Array.isArray(result.problems)) errors.push("problems 必须是数组");
+    if (result.pendingAV != null && !Array.isArray(result.pendingAV))
+      errors.push("pendingAV 必须是数组");
     if (result.summary && result.summary.length > MAX_FIELD_CHARS) errors.push("summary 超长");
     if (result.verification && result.verification.length > MAX_FIELD_CHARS) errors.push("verification 超长");
     if (errors.length) return { ok: false, errors };
 
-    // 引用校验：ref 存在；quote 必填且为源文本子串；atMs 由服务端从原记录补入（Codex 评审：不让模型计算毫秒）
-    for (const ev of result.evidence) {
-      if (!ev || typeof ev !== "object") { errors.push("evidence 条目非法"); continue; }
-      if (!ev.ref || typeof ev.ref !== "string") { errors.push("evidence 缺少 ref"); continue; }
-      const src = evidenceByRef.get(ev.ref);
-      if (!src) { errors.push(`引用 ${ev.ref} 不存在`); continue; }
-      const quote = typeof ev.quote === "string" ? ev.quote.trim() : "";
-      const srcText = String(src.text || src.name || (src.online != null ? src.online : "")).trim();
-      if (!quote) errors.push(`引用 ${ev.ref} 缺少引文`);
-      else if (!srcText || !srcText.includes(quote))
-        errors.push(`引用 ${ev.ref} 引文与源记录不一致`);
-      else ev.atMs = src.atMs; // 校验通过后补入精确时间
+    const checkRefs = (refs, where) => {
+      if (!Array.isArray(refs) || refs.length === 0) { errors.push(`${where} refs 非空`); return false; }
+      const prefixes = new Set();
+      for (const r of refs) {
+        if (typeof r !== "string" || !evidenceByRef.has(r)) { errors.push(`${where} 引用了不存在的 ${r}`); return false; }
+        prefixes.add(refPrefix(r));
+      }
+      if (prefixes.size > 1) { errors.push(`${where} refs 应指向同一类型记录`); return false; }
+      return true;
+    };
+
+    for (const [i, g] of (result.goodScripts || []).entries()) {
+      const where = `goodScripts[${i}]`;
+      if (!g || typeof g !== "object") { errors.push(`${where} 条目非法`); continue; }
+      if (!checkRefs(g.refs, where)) continue;
+      for (const f of ["whyKeep", "reusableFrame", "appliesTo"]) {
+        if (typeof g[f] !== "string" || !g[f].trim() || g[f].length > MAX_FIELD_CHARS) {
+          errors.push(`${where} ${f} 非法`); break;
+        }
+      }
+      // 可复用骨架严禁空洞大词：只由通用词组成、没有具体槽位则拒绝
+      const frame = (g.reusableFrame || "").trim();
+      if (frame && !frame.includes("[") && !frame.includes("→") && EMPTY_FRAME_RE.test(frame))
+        errors.push(`${where} reusableFrame 过于空洞，需带槽位的具体句式`);
+      if (g.asrNotes != null && typeof g.asrNotes !== "string") errors.push(`${where} asrNotes 非法`);
+      if (!errors.some(e => e.startsWith(where))) enrichRefs(g, evidenceByRef);
     }
-    for (const s of result.suggestions) {
-      if (!s || typeof s !== "object") { errors.push("suggestion 条目非法"); continue; }
-      if (typeof s.text !== "string" || !s.text.trim() || s.text.length > MAX_FIELD_CHARS) {
-        errors.push("suggestion.text 非法"); continue;
-      }
-      if (!Array.isArray(s.basedOn) || s.basedOn.length === 0) {
-        errors.push("建议缺少证据依据（basedOn 非空）"); continue;
-      }
-      for (const r of s.basedOn) {
-        if (typeof r !== "string" || !evidenceByRef.has(r)) errors.push(`建议引用了不存在的 ${r}`);
-      }
+    for (const [i, p] of (result.problems || []).entries()) {
+      const where = `problems[${i}]`;
+      if (!p || typeof p !== "object") { errors.push(`${where} 条目非法`); continue; }
+      if (!PROBLEM_TYPES.includes(p.type)) { errors.push(`${where} type 非法`); continue; }
+      if (!checkRefs(p.refs, where)) continue;
+      if (typeof p.description !== "string" || !p.description.trim() || p.description.length > MAX_FIELD_CHARS)
+        { errors.push(`${where} description 非法`); continue; }
+      if (!errors.some(e => e.startsWith(where))) enrichRefs(p, evidenceByRef);
+    }
+    for (const [i, s] of (result.pendingAV || []).entries()) {
+      if (typeof s !== "string" || !s.trim()) errors.push(`pendingAV[${i}] 非法`);
     }
   } catch (e) {
     // 畸形输出不能抛出未处理异常
@@ -249,17 +290,22 @@ function buildEvidenceByRef(evidence) {
 }
 
 // ---------- prompt 组装 ----------
-function buildPrompt(evidence, rulesText) {
+function buildPrompt(evidence, baseRulesText, scarfRulesText) {
   const ev = {
     范围: evidence.range.label,
     起点商品_上下文: evidence.contextProduct || "无",
     转写: evidence.transcripts.map(t => ({ ref: t.ref, 时间: t.label, 内容: t.text, 质量: t.quality })),
-    弹幕: evidence.danmaku.map(d => ({ ref: d.ref, 时间: d.label, 内容: d.text, 质量: d.quality })),
+    弹幕: evidence.danmaku.map(d => {
+      const e = { ref: d.ref, 时间: d.label, 内容: d.text, 质量: d.quality };
+      if (d.isStaff) e.isStaff = true; // 主播号/运营号：不当作自然观众需求
+      return e;
+    }),
     商品事件_范围内: evidence.products.map(p => ({ ref: p.ref, 时间: p.label, 类型: p.type, 商品: p.name, 价格: p.priceText })),
     在线采样: evidence.online.map(o => ({ ref: o.ref, 时间: o.label, 在线: o.online })),
     数据说明: evidence.notes,
   };
-  return `${rulesText}\n\n## 本次分析的证据（JSON）\n\`\`\`json\n${JSON.stringify(ev, null, 1)}\n\`\`\`\n\n请只输出 JSON，不要输出其他内容，格式：\n{"summary":"…","evidence":[{"ref":"t_0001","quote":"…"}],"suggestions":[{"text":"…","basedOn":["t_0001"]}],"verification":"…"}\n注意：evidence 每条只需 ref 和 quote，atMs 由服务端自动补入，不要自行计算或编造时间。`;
+  const rulesText = `${baseRulesText}\n\n---\n\n${scarfRulesText}`;
+  return `${rulesText}\n\n## 本次分析的证据（JSON）\n\`\`\`json\n${JSON.stringify(ev, null, 1)}\n\`\`\`\n\n请只输出 JSON，不要输出其他内容，格式：\n{"summary":"…","goodScripts":[{"refs":["t_0001","t_0002"],"whyKeep":"…","reusableFrame":"…","appliesTo":"…","asrNotes":""}],"problems":[{"type":"filler","refs":["t_0005"],"description":"…"}],"pendingAV":["…"],"verification":"…"}\n注意：好话术/问题用 refs 数组指向连续记录，不要自己拼接长句，引文由服务端自动还原；确实没有好话术或明显问题时对应数组返回 [] 并如实说明。`;
 }
 
 // ---------- 模型调用 ----------
@@ -307,11 +353,20 @@ function callDeepSeek({ apiBase, apiKey, model, prompt, timeoutMs }) {
 function mockResult(evidence) {
   // 调用前已保证 hasAnalyzable，first 必存在
   const first = evidence.transcripts[0] || evidence.danmaku[0] || evidence.products[0] || evidence.online[0];
-  const firstText = String(first.text || first.name || first.online || "").slice(0, 30);
+  const byRef = buildEvidenceByRef(evidence);
+  const g = {
+    refs: [first.ref],
+    whyKeep: "MOCK：此处应说明哪句话解决了什么顾虑",
+    reusableFrame: "MOCK：先问[某类困扰]→拿[具体参照物]对比→给[动作指令]",
+    appliesTo: "MOCK：适用条件",
+    asrNotes: "",
+  };
+  enrichRefs(g, byRef);
   return {
     summary: `MOCK：本段 ${evidence.range.label} 共有转写 ${evidence.transcripts.length} 条、弹幕 ${evidence.danmaku.length} 条${evidence.contextProduct ? `，起点商品为${evidence.contextProduct.name}` : ""}。`,
-    evidence: [{ ref: first.ref, atMs: first.atMs, quote: firstText }],
-    suggestions: [{ text: "MOCK 建议：此处应为基于证据的具体动作", basedOn: [first.ref] }],
+    goodScripts: [g],
+    problems: [],
+    pendingAV: ["MOCK：语气感染力待音视频分析"],
     verification: "MOCK：下次观察对应指标变化",
   };
 }
@@ -320,7 +375,7 @@ function mockResult(evidence) {
 async function analyzeRange(opts) {
   const {
     sessionDir, sessionId, rangeStartMs, rangeEndMs,
-    evidenceHash: clientHash, secrets, rulesPath, mockMode,
+    evidenceHash: clientHash, secrets, rulesBasePath, rulesScarfPath, mockMode,
   } = opts;
 
   // 会话存在性复查
@@ -342,7 +397,7 @@ async function analyzeRange(opts) {
   if (totalChars > MAX_EVIDENCE_CHARS)
     throw Object.assign(new Error(`证据量过大（约${Math.round(totalChars / 1000)}k 字符），请缩小时间范围后重试`), { code: "TOO_LARGE" });
 
-  const ruleHash = ruleContentHash(rulesPath);
+  const ruleHash = ruleContentHash([rulesBasePath, rulesScarfPath]);
   const model = (secrets && secrets.model) || "deepseek-chat";
   const provider = (secrets && secrets.provider) || "deepseek";
   const cacheKey = buildCacheKey({ evidenceHash, model, provider, ruleHash, mockMode });
@@ -366,8 +421,9 @@ async function analyzeRange(opts) {
     } else if (!secrets || !secrets.apiKey) {
       throw Object.assign(new Error("尚未配置分析 API，请先在应用数据目录创建 analysis-secrets.json 并填入 DeepSeek 密钥"), { code: "NO_API_KEY" });
     } else {
-      const rulesText = fs.readFileSync(rulesPath, "utf8");
-      const prompt = buildPrompt(evidence, rulesText);
+      const baseRulesText = fs.readFileSync(rulesBasePath, "utf8");
+      const scarfRulesText = fs.readFileSync(rulesScarfPath, "utf8");
+      const prompt = buildPrompt(evidence, baseRulesText, scarfRulesText);
       const { content, usage: u } = await callDeepSeek({
         apiBase: secrets.apiBase || "https://api.deepseek.com",
         apiKey: secrets.apiKey,
@@ -460,10 +516,10 @@ function listFeedback(sessionDir, analysisId) {
 }
 
 module.exports = {
-  RULE_VERSION, MAX_EVIDENCE_CHARS,
+  RULE_VERSION, MAX_EVIDENCE_CHARS, PROBLEM_TYPES,
   collectEvidence, previewSummary, hasAnalyzable,
   buildCacheKey, ruleContentHash,
-  validateModelOutput, buildEvidenceByRef,
+  validateModelOutput, buildEvidenceByRef, enrichRefs,
   buildPrompt, analyzeRange, saveFeedback,
   listAnalyses, getAnalysis, listFeedback,
   _inflight: inflight, // 测试用

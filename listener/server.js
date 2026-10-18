@@ -30,7 +30,8 @@ const PROFILES_DIR = path.join(__dirname, "profiles");
 const ACCOUNTS_PATH = path.join(__dirname, "accounts.json");
 // TASK-AI-002：分析密钥独立文件，与 asr-secrets.json 彻底分开
 const ANALYSIS_SECRETS_PATH = path.join(APP_SUPPORT, "analysis-secrets.json");
-const ANALYSIS_RULES_PATH = path.join(__dirname, "analysis-rules-v1.md");
+const ANALYSIS_RULES_BASE_PATH = path.join(__dirname, "analysis-rules-base-v1.md");
+const ANALYSIS_RULES_SCARF_PATH = path.join(__dirname, "analysis-rules-scarf-v1.md");
 const Analysis = require("./analysis");
 
 let cachedAnalysisSecrets = null; // null=未加载过；false=无文件/无效；object=已加载
@@ -994,7 +995,8 @@ const server = http.createServer(async (req, res) => {
         rangeStartMs: rs, rangeEndMs: re,
         evidenceHash: body.evidenceHash || null,
         secrets,
-        rulesPath: ANALYSIS_RULES_PATH,
+        rulesBasePath: ANALYSIS_RULES_BASE_PATH,
+        rulesScarfPath: ANALYSIS_RULES_SCARF_PATH,
         mockMode,
       });
       return sendJson(res, 200, { ok: true, analysis });

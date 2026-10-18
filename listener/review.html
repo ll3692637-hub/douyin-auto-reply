@@ -862,16 +862,27 @@ async function doAnalyze(sessionId, evidenceHash) {
 // 证据 ref → atMs 映射（用于点击定位）
 let refAtMsMap = {};
 
+const PROBLEM_TYPE_LABEL = { filler: "无效口水话", imagery: "美感没讲出来", engagement: "缺少观众参与感" };
+
 function renderAnalysisResult(sessionId, a, feedback) {
   const r = a.result || {};
-  refAtMsMap = {};
-  (r.evidence || []).forEach(ev => { if (ev.ref && ev.atMs != null) refAtMsMap[ev.ref] = ev.atMs; });
-  const evHtml = (r.evidence || []).map(ev =>
-    `<div class="search-match" data-ref="${esc(ev.ref)}">
-      <span class="t">${esc(ev.ref)}</span>${esc(ev.quote || "")}</div>`).join("");
-  const sugHtml = (r.suggestions || []).map(s =>
-    `<div style="font-size:13px;margin-bottom:8px">• ${esc(s.text)}
-      ${(s.basedOn || []).map(b => `<span class="t" style="color:#999;font-size:11px;margin-left:6px">${esc(b)}</span>`).join("")}</div>`).join("");
+  // 好话术：服务端已拼接 text + 起止时间；点击定位到起始时间
+  const gsHtml = (r.goodScripts || []).map((g, i) =>
+    `<div class="card" data-startms="${g.startMs != null ? g.startMs : ""}" style="background:#f8fff8;border:1px solid #e0f0e0;margin:0 0 8px;padding:10px 12px;cursor:pointer">
+      <div style="font-size:12px;color:#2e7d32;margin-bottom:4px"><b>好话术 ${i + 1}</b> · ${esc(g.startLabel || "")} – ${esc(g.endLabel || "")}（点击定位）</div>
+      <div style="font-size:13px;line-height:1.7;margin-bottom:6px">「${esc(g.text || "")}」${g.asrNotes ? `<span style="color:#e65100;font-size:12px">（${esc(g.asrNotes)}）</span>` : ""}</div>
+      <div style="font-size:12px;color:#555;line-height:1.7"><b>为什么值得留：</b>${esc(g.whyKeep || "—")}</div>
+      <div style="font-size:12px;color:#555;line-height:1.7"><b>可复用骨架：</b>${esc(g.reusableFrame || "—")}</div>
+      <div style="font-size:12px;color:#555;line-height:1.7"><b>适用条件：</b>${esc(g.appliesTo || "—")}</div>
+    </div>`).join("");
+  const pbHtml = (r.problems || []).map((p, i) =>
+    `<div class="card" data-startms="${p.startMs != null ? p.startMs : ""}" style="background:#fff8f0;border:1px solid #f0e0d0;margin:0 0 8px;padding:10px 12px;cursor:pointer">
+      <div style="font-size:12px;color:#e65100;margin-bottom:4px"><b>${esc(PROBLEM_TYPE_LABEL[p.type] || p.type)}</b> · ${esc(p.startLabel || "")} – ${esc(p.endLabel || "")}（点击定位）</div>
+      <div style="font-size:13px;line-height:1.7">「${esc(p.text || "")}」</div>
+      <div style="font-size:12px;color:#555;line-height:1.7;margin-top:4px">${esc(p.description || "—")}</div>
+    </div>`).join("");
+  const avHtml = (r.pendingAV || []).map(s =>
+    `<div style="font-size:12px;color:#999;margin-bottom:4px">• ${esc(s)}</div>`).join("");
   const fbHtml = (feedback || []).map(f =>
     `<div style="font-size:12px;color:#666">【${f.type === "useful" ? "有用" : "不准确"}】${esc(f.note || "")} <span style="color:#ccc">${esc((f.at || "").slice(0, 16))}</span></div>`).join("");
   $("tlAnalysisResult").innerHTML = `
@@ -884,10 +895,11 @@ function renderAnalysisResult(sessionId, a, feedback) {
       </div>
       <h4 style="margin:10px 0 4px">这段发生了什么</h4>
       <div style="font-size:13px;line-height:1.7">${esc(r.summary || "—")}</div>
-      <h4 style="margin:10px 0 4px">原始证据（点击定位）</h4>
-      <div>${evHtml || '<div class="nodata">无</div>'}</div>
-      <h4 style="margin:10px 0 4px">建议怎么改</h4>
-      <div>${sugHtml || '<div class="nodata">无</div>'}</div>
+      <h4 style="margin:10px 0 4px">值得复用的好话术（点击定位）</h4>
+      <div>${gsHtml || '<div class="nodata">本段未发现值得复用的好话术</div>'}</div>
+      <h4 style="margin:10px 0 4px">问题分析（点击定位）</h4>
+      <div>${pbHtml || '<div class="nodata">本段未发现明显问题</div>'}</div>
+      ${avHtml ? `<h4 style="margin:10px 0 4px">待音视频分析</h4><div>${avHtml}</div>` : ""}
       <h4 style="margin:10px 0 4px">下次怎么验证</h4>
       <div style="font-size:13px;line-height:1.7">${esc(r.verification || "—")}</div>
       <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -897,15 +909,15 @@ function renderAnalysisResult(sessionId, a, feedback) {
       </div>
       <div id="fbList" style="margin-top:6px">${fbHtml}</div>
     </div>`;
-  $("tlAnalysisResult").querySelectorAll("[data-ref]").forEach(el => {
+  // 点击好话术/问题卡片 → 定位到起始时间
+  $("tlAnalysisResult").querySelectorAll("[data-startms]").forEach(el => {
     el.addEventListener("click", () => {
-      const atMs = refAtMsMap[el.dataset.ref];
-      if (atMs != null && tlInstance) {
+      const atMs = Number(el.dataset.startms);
+      if (Number.isFinite(atMs) && tlInstance) {
         tlInstance.setCursor(atMs);
         tlRange = { start: Math.max(0, atMs - 60000), end: atMs + 60000 };
         tlInstance.setSelection(tlRange.start, tlRange.end);
         tlEvPage = 0;
-        // 重新加载当前会话详情的证据区（不整页刷新）
         const sid = currentSessionId;
         fetch(`/api/session?id=${encodeURIComponent(sid)}`).then(x => x.json()).then(d => {
           if (d.ok) {

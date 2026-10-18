@@ -826,7 +826,9 @@ async function testAI002() {
   assert.equal(result.status, 200);
   const an1 = JSON.parse(result.body).analysis;
   assert.equal(an1.mock, true);
-  assert.ok(an1.result.summary && an1.result.evidence && an1.result.suggestions && an1.result.verification);
+  assert.ok(an1.result.summary && Array.isArray(an1.result.goodScripts) && Array.isArray(an1.result.problems) && an1.result.verification);
+  assert.ok(an1.result.goodScripts.length > 0);
+  assert.ok(an1.result.goodScripts[0].text && an1.result.goodScripts[0].startMs != null);
   assert.ok(an1.analysisId.startsWith("an_"));
 
   // AI-06：缓存命中不重复调用
@@ -845,30 +847,65 @@ async function testAI002() {
   assert.equal(result.status, 409);
   assert.equal(JSON.parse(result.body).code, "EVIDENCE_CHANGED");
 
-  // AI-03：引用校验 — 不存在的 ref / 时间不一致 / 引文不一致
+  // AI-03：引用校验 — 新格式（goodScripts/problems + refs 数组）
   const byRef = Analysis.buildEvidenceByRef(evidence);
+  // 不存在的 ref → 不通过
   let v = Analysis.validateModelOutput({
     summary: "s", verification: "v",
-    evidence: [{ ref: "t_9999", atMs: 1, quote: "x" }],
-    suggestions: [],
+    goodScripts: [{ refs: ["t_9999"], whyKeep: "k", reusableFrame: "先问[困扰]→给[指令]", appliesTo: "a" }],
+    problems: [],
   }, byRef);
   assert.equal(v.ok, false);
-  // Codex 评审新行为：模型给的 atMs 被忽略，服务端统一补入 → 通过
+  // 多 ref 拼接：服务端自动还原完整原话与起止时间
   const modelOut = {
     summary: "s", verification: "v",
-    evidence: [{ ref: "t_0001", atMs: 999999, quote: "这个花色真的绝了" }],
-    suggestions: [{ text: "多讲卖点", basedOn: ["t_0001"] }],
+    goodScripts: [{
+      refs: ["t_0001", "t_0002"],
+      whyKeep: "第一句抛钩子，第二句给体感",
+      reusableFrame: "先问[穿搭困扰]→拿[羊绒]对比体感→给[试戴指令]",
+      appliesTo: "拉绒类产品开场",
+      asrNotes: "",
+    }],
+    problems: [{ type: "filler", refs: ["t_0003"], description: "重复三遍价格无新增信息" }],
+    pendingAV: ["语气感染力待音视频分析"],
   };
   v = Analysis.validateModelOutput(modelOut, byRef);
   assert.equal(v.ok, true);
-  // 补入的是原记录的精确毫秒（而非模型给的 999999）
-  assert.equal(modelOut.evidence[0].atMs, 100000);
+  const g0 = modelOut.goodScripts[0];
+  assert.equal(g0.text, "这个花色真的绝了模拟话术一条"); // 服务端拼接
+  assert.equal(g0.startMs, 100000);
+  assert.equal(g0.endMs, 120000);
+  assert.equal(g0.startLabel, "1:40");
+  // 空数组放行：确实没有好话术/问题时不硬凑
   v = Analysis.validateModelOutput({
-    summary: "s", verification: "v",
-    evidence: [{ ref: "t_0001", atMs: 100000, quote: "这个花色真的绝了" }],
-    suggestions: [{ text: "多讲卖点", basedOn: ["t_0001"] }],
+    summary: "s", verification: "v", goodScripts: [], problems: [], pendingAV: [],
   }, byRef);
   assert.equal(v.ok, true);
+  // type 非法 → 不通过
+  v = Analysis.validateModelOutput({
+    summary: "s", verification: "v", goodScripts: [],
+    problems: [{ type: "nope", refs: ["t_0001"], description: "x" }],
+  }, byRef);
+  assert.equal(v.ok, false);
+  // refs 混用转写和弹幕 → 不通过
+  v = Analysis.validateModelOutput({
+    summary: "s", verification: "v",
+    goodScripts: [{ refs: ["t_0001", "d_0001"], whyKeep: "k", reusableFrame: "先问[x]→给[y]", appliesTo: "a" }],
+    problems: [],
+  }, byRef);
+  assert.equal(v.ok, false);
+  // reusableFrame 空洞大词 → 不通过
+  v = Analysis.validateModelOutput({
+    summary: "s", verification: "v",
+    goodScripts: [{ refs: ["t_0001"], whyKeep: "k", reusableFrame: "痛点+卖点+促单", appliesTo: "a" }],
+    problems: [],
+  }, byRef);
+  assert.equal(v.ok, false);
+  // 畸形条目（null）→ 返回失败而非抛异常
+  v = Analysis.validateModelOutput({
+    summary: "s", verification: "v", goodScripts: [null], problems: [],
+  }, byRef);
+  assert.equal(v.ok, false);
 
   // AI-07b：反馈独立文件保存
   result = await request("POST", "/api/analysis/feedback",
@@ -894,7 +931,8 @@ async function testAI002() {
   const p = Analysis.analyzeRange({
     sessionDir: aiDir2, sessionId: aiSess2,
     rangeStartMs: 0, rangeEndMs: 60000, evidenceHash: hash2,
-    secrets: null, rulesPath: path.join(root, "analysis-rules-v1.md"), mockMode: true,
+    secrets: null, rulesBasePath: path.join(root, "analysis-rules-base-v1.md"),
+      rulesScarfPath: path.join(root, "analysis-rules-scarf-v1.md"), mockMode: true,
   });
   fs.rmSync(aiDir2, { recursive: true, force: true }); // 并发删除
   let goneErr = null;
@@ -907,55 +945,53 @@ async function testAI002() {
     { sessionId: aiSess, analysisId: "../../x", type: "useful" });
   assert.equal(result.status, 400);
 
-  // ---- Codex 评审 5 项回归 ----
-  // 修1：正常模式无密钥 → 中文报错，不自动 mock
+  // ---- 分析标准 v0.1 新增回归 ----
+  // 修1（保留）：正常模式无密钥 → 中文报错，不自动 mock
   let noKeyErr = null;
   const fresh = Analysis.collectEvidence(aiDir, 100000, 180000);
   try {
     await Analysis.analyzeRange({
       sessionDir: aiDir, sessionId: aiSess,
       rangeStartMs: 100000, rangeEndMs: 180000, evidenceHash: fresh.evidenceHash,
-      secrets: null, rulesPath: path.join(root, "analysis-rules-v1.md"), mockMode: false,
+      secrets: null, rulesBasePath: path.join(root, "analysis-rules-base-v1.md"),
+      rulesScarfPath: path.join(root, "analysis-rules-scarf-v1.md"), mockMode: false,
     });
   } catch (e) { noKeyErr = e; }
   assert.ok(noKeyErr && noKeyErr.code === "NO_API_KEY");
   assert.ok(noKeyErr.message.includes("analysis-secrets.json"));
 
-  // 修3：引用严格校验
-  const strictByRef = Analysis.buildEvidenceByRef(evidence);
-  // 引文追加编造内容 → 不通过
-  v = Analysis.validateModelOutput({
-    summary: "s", verification: "v",
-    evidence: [{ ref: "t_0001", atMs: 100000, quote: "这个花色真的绝了然后成交暴涨十倍" }],
-    suggestions: [{ text: "多讲卖点", basedOn: ["t_0001"] }],
-  }, strictByRef);
-  assert.equal(v.ok, false);
-  // 修3（新行为）：模型不返回 atMs，服务端从原记录补入
-  v = Analysis.validateModelOutput({
-    summary: "s", verification: "v",
-    evidence: [{ ref: "t_0001", quote: "这个花色真的绝了" }],
-    suggestions: [{ text: "多讲卖点", basedOn: ["t_0001"] }],
-  }, strictByRef);
-  assert.equal(v.ok, true);
-  // 建议无依据 → 不通过
-  v = Analysis.validateModelOutput({
-    summary: "s", verification: "v",
-    evidence: [{ ref: "t_0001", atMs: 100000, quote: "这个花色真的绝了" }],
-    suggestions: [{ text: "多讲卖点", basedOn: [] }],
-  }, strictByRef);
-  assert.equal(v.ok, false);
-  // 畸形条目（null）→ 返回失败而非抛异常
-  v = Analysis.validateModelOutput({
-    summary: "s", verification: "v",
-    evidence: [null], suggestions: [],
-  }, strictByRef);
-  assert.equal(v.ok, false);
-  // 空 evidence 数组 → 不通过
-  v = Analysis.validateModelOutput({
-    summary: "s", verification: "v",
-    evidence: [], suggestions: [],
-  }, strictByRef);
-  assert.equal(v.ok, false);
+  // isStaff：主播号/运营号弹幕打标记，用户名仍不发送
+  const staffSess = "session_stafftest";
+  const staffDir = path.join(dataDir, "sessions", staffSess);
+  fs.mkdirSync(staffDir, { recursive: true });
+  fs.writeFileSync(path.join(staffDir, "session.json"), JSON.stringify({ sessionId: staffSess, startTime: 1 }));
+  const wjl = (f, arr) => fs.writeFileSync(path.join(staffDir, f),
+    arr.map(o => JSON.stringify(o)).join("\n") + "\n");
+  wjl("transcript.jsonl", [{ offsetMs: 1000, text: "欢迎来到直播间", status: "ok" }]);
+  wjl("danmaku.jsonl", [
+    { offsetMs: 2000, userName: "主播本人", userId: "u_anchor", text: "大家多多关注", role: "anchor" },
+    { offsetMs: 3000, userName: "运营小王", userId: "u_water", text: "这条真的不扎", role: "water_army" },
+    { offsetMs: 4000, userName: "路人甲", userId: "u_xxx", text: "多少钱", role: "audience" },
+  ]);
+  const staffEv = Analysis.collectEvidence(staffDir, 0, 60000).evidence;
+  assert.equal(staffEv.danmaku.find(d => d.text === "大家多多关注").isStaff, true);
+  assert.equal(staffEv.danmaku.find(d => d.text === "这条真的不扎").isStaff, true);
+  assert.equal(staffEv.danmaku.find(d => d.text === "多少钱").isStaff, false);
+  // 用户名依然不进入证据
+  assert.ok(!("userName" in staffEv.danmaku[0]));
+  // prompt 里 isStaff 透出给模型
+  const prompt = Analysis.buildPrompt(staffEv, "BASE", "SCARF");
+  assert.ok(prompt.includes('"isStaff": true'));
+  assert.ok(!prompt.includes("主播本人") && !prompt.includes("运营小王"));
+
+  // 双规则 hash 计入缓存键：改任一文件都不误命中
+  const h1 = Analysis.ruleContentHash([
+    path.join(root, "analysis-rules-base-v1.md"),
+    path.join(root, "analysis-rules-scarf-v1.md"),
+  ]);
+  const h2 = Analysis.ruleContentHash([path.join(root, "analysis-rules-base-v1.md")]);
+  assert.notEqual(h1, h2);
+  assert.ok(h1.length === 64);
 
   // 修5：会话隔离 — 两会话相同证据，并发结果不串 sessionId
   const aiSess3 = "session_ai002test3";
@@ -979,12 +1015,14 @@ async function testAI002() {
     Analysis.analyzeRange({
       sessionDir: aiDir3, sessionId: aiSess3, rangeStartMs: 0, rangeEndMs: 60000,
       evidenceHash: hash3, secrets: null,
-      rulesPath: path.join(root, "analysis-rules-v1.md"), mockMode: true,
+      rulesBasePath: path.join(root, "analysis-rules-base-v1.md"),
+      rulesScarfPath: path.join(root, "analysis-rules-scarf-v1.md"), mockMode: true,
     }),
     Analysis.analyzeRange({
       sessionDir: aiDir4, sessionId: aiSess4, rangeStartMs: 0, rangeEndMs: 60000,
       evidenceHash: hash4, secrets: null,
-      rulesPath: path.join(root, "analysis-rules-v1.md"), mockMode: true,
+      rulesBasePath: path.join(root, "analysis-rules-base-v1.md"),
+      rulesScarfPath: path.join(root, "analysis-rules-scarf-v1.md"), mockMode: true,
     }),
   ]);
   assert.equal(r3.sessionId, aiSess3);
