@@ -17,6 +17,8 @@
  * 日志铁律：绝不输出密钥和直播原文，只输出计数、耗时、状态、错误码。
  * 超时口径：单次耗时只是样本，不能证明 30 秒长期够用或不够用；
  * 90 秒仍超时也不等于"改成 90 秒就解决"，需另行排查。
+ * 下一次真实测试只执行 [3]（[1]/[2] 已验证通过）：
+ *   node test/diagnose-node.js --only3 <sessionId> <startMs> <endMs>
  *
  * 离线结构检查（不联网、不读密钥）：
  *   node test/diagnose-node.js --inspect <响应文件>
@@ -53,15 +55,16 @@ function ask(question) {
 }
 
 // 与 callDeepSeek 完全相同的请求体，用于检查原始响应结构
-function rawChatOnce({ apiBase, apiKey, model, prompt, timeoutMs }) {
+// extraBody 可合并额外参数（如 thinking: {type:"disabled"} 非思考探针）
+function rawChatOnce({ apiBase, apiKey, model, prompt, timeoutMs, extraBody }) {
   return new Promise((resolve) => {
     const url = new URL(apiBase.replace(/\/$/, "") + "/chat/completions");
-    const body = JSON.stringify({
+    const body = JSON.stringify(Object.assign({
       model,
       messages: [{ role: "user", content: prompt }],
       temperature: 0.3,
       response_format: { type: "json_object" },
-    });
+    }, extraBody || {}));
     const t0 = Date.now();
     const req = https.request(url, {
       method: "POST",
@@ -89,7 +92,7 @@ function inspectFile(file) {
     process.exit(1);
   }
   const saved = JSON.parse(fs.readFileSync(file, "utf8"));
-  console.log("HTTP:", saved.status, " 耗时:", saved.ms, "ms  模型:", saved.model, " 时间:", saved.at);
+  console.log("HTTP:", saved.status, " 耗时:", saved.ms, "ms  模型:", saved.model, " thinkingDisabled:", saved.thinkingDisabled ? "是" : "否/未知", " 时间:", saved.at);
   let j = null;
   try { j = JSON.parse(saved.raw); } catch { /* 非 JSON */ }
   if (!j) { console.log("响应体不是合法 JSON"); return; }
@@ -124,9 +127,10 @@ function inspectFile(file) {
   }
 }
 
-function saveRawResponse({ status, ms, raw, model }) {
+function saveRawResponse({ status, ms, raw, model, thinkingDisabled }) {
   const file = path.join(APP_SUPPORT, "diag-response-" + Date.now() + ".json");
-  fs.writeFileSync(file, JSON.stringify({ status, ms, raw, model, at: new Date().toISOString() }));
+  // 仅本机保存、权限 600；目录在仓库外，不进 Git；日志不打印正文
+  fs.writeFileSync(file, JSON.stringify({ status, ms, raw, model, thinkingDisabled: !!thinkingDisabled, at: new Date().toISOString() }), { mode: 0o600 });
   console.log("  原始响应已保存:", file, "（离线检查: node test/diagnose-node.js --inspect <文件>）");
 }
 
@@ -141,7 +145,10 @@ async function main() {
   console.log("model:", model);
   console.log("注：callDeepSeek 业务默认超时 30 秒；本诊断用 90 秒上限测真实耗时（单次样本，仅供决策参考）。");
 
-  // [1] 最小测试：业务原函数 + 与 JSON 模式匹配的 prompt
+  const only3 = process.argv.includes("--only3");
+  const noThink = process.argv.includes("--no-think"); // [3] 请求体加 thinking:{type:"disabled"}
+  // [1] 最小测试：业务原函数 + 与 JSON 模式匹配的 prompt（--only3 时跳过，已验证）
+  if (!only3) {
   console.log("\n[1] callDeepSeek 最小测试（prompt 要求只返回 JSON，与 response_format 匹配）");
   {
     const t0 = Date.now();
@@ -188,12 +195,14 @@ async function main() {
       }
     }
   }
+  } // end if (!only3)
 
   // [3] 真实复盘请求：必须显式指定场次与范围，展示条数后确认才发送
   console.log("\n[3] 真实复盘请求检查（需显式参数）");
-  const sessionId = process.argv[2];
-  const rangeStartMs = Number(process.argv[3]);
-  const rangeEndMs = Number(process.argv[4]);
+  const args = process.argv.filter(a => a !== "--only3" && a !== "--no-think");
+  const sessionId = args[2];
+  const rangeStartMs = Number(args[3]);
+  const rangeEndMs = Number(args[4]);
   if (!sessionId || !Number.isFinite(rangeStartMs) || !Number.isFinite(rangeEndMs) || rangeEndMs <= rangeStartMs) {
     console.log("  未提供有效参数，本步跳过（不发送任何真实数据）。");
     console.log("  用法: node test/diagnose-node.js <sessionId> <startMs> <endMs>（毫秒，相对场次开始）");
@@ -234,16 +243,18 @@ async function main() {
     // 用与 callDeepSeek 相同请求体的原始调用：业务函数本身已在 [1] 验证，
     // 这里需要保留 finish_reason、reasoning_content 等原始字段供结构检查
     console.log("  说明: 本步用与 callDeepSeek 相同请求体的原始调用（保留原始响应字段）；业务函数本身已在 [1] 验证。");
-    const r = await rawChatOnce({ apiBase, apiKey, model, prompt, timeoutMs: DIAG_TIMEOUT_MS });
+    if (noThink) console.log("  非思考探针: 请求体已加 thinking:{type:\"disabled\"}（官方文档参数，中转站透传待本次验证）");
+    const r = await rawChatOnce({ apiBase, apiKey, model, prompt, timeoutMs: DIAG_TIMEOUT_MS,
+      extraBody: noThink ? { thinking: { type: "disabled" } } : undefined });
     const ms = r.ms;
     if (!r.ok) {
       console.log("  结果: 失败，本次耗时", ms, "ms，", r.err ? ("错误: " + r.err) : ("HTTP " + r.status));
-      if (r.raw) saveRawResponse({ status: r.status, ms, raw: r.raw, model });
+      if (r.raw) saveRawResponse({ status: r.status, ms, raw: r.raw, model, thinkingDisabled: noThink });
       if (r.err === "timeout") {
         console.log("  超时参考: 90 秒上限内仍超时。不能据此认定改参数即可解决；可能涉及模型生成慢或网关排队，需进一步排查。");
       }
     } else {
-      saveRawResponse({ status: r.status, ms, raw: r.raw, model });
+      saveRawResponse({ status: r.status, ms, raw: r.raw, model, thinkingDisabled: noThink });
       let j = null;
       try { j = JSON.parse(r.raw); } catch { /* 非 JSON */ }
       const msg = j && j.choices && j.choices[0] && j.choices[0].message;
