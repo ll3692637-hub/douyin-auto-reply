@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>一屏报告 · 离线样例验证（不调用 API）</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f5f6f8; color: #333; font-size: 14px; padding: 20px; max-width: 760px; margin: 0 auto; }
+  .clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .clamp1 { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+  .card { background: #fff; border: 1px solid #e8e8e8; border-radius: 12px; }
+  .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 20px; }
+  .nodata { font-size: 12px; color: #aaa; padding: 8px 0; }
+  h2 { font-size: 16px; margin: 18px 0 8px; }
+  h4 { font-size: 13px; margin: 10px 0 4px; }
+  .check { background: #fffbe6; border: 1px solid #ffe58f; border-radius: 12px; padding: 12px 14px; font-size: 12px; line-height: 2; color: #5c4b00; }
+  .check b { color: #333; }
+  #toast { position: fixed; left: 50%; bottom: 40px; transform: translateX(-50%); background: #1a1d23; color: #fff; font-size: 13px; padding: 10px 18px; border-radius: 20px; display: none; z-index: 99; }
+  #selfcheck { font-size: 12px; color: #2e7d32; margin-top: 6px; }
+  details summary { outline: none; }
+</style>
+</head>
+<body>
+
+<div class="check">
+  <b>离线样例验证清单（以下数据均为样例，非真实分析）：</b><br>
+  1. 不展开时能快速看完 —— 默认只见一句话结论、3 张好话术卡、1 个问题提示，其余折叠<br>
+  2. 展开能读全文 —— 点「展开全文与解释」看到完整原文、ASR 说明、骨架、适用条件<br>
+  3. 点击定位不受影响 —— 点卡片空白处应弹出定位提示；点「展开」文字时不应弹出<br>
+  4. 无数据丢失 —— 全文都在 DOM 里（见底部自检行），收起只是视觉折叠
+</div>
+
+<h2>样例 A：长报告（5 好话术 / 3 问题 / 长结论 / 长验证清单）</h2>
+<div id="sampleA"></div>
+
+<h2>样例 B：空报告（0 好话术 / 0 问题，验证"不足不凑"）</h2>
+<div id="sampleB"></div>
+
+<div id="selfcheck"></div>
+<div id="toast"></div>
+
+<script>
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function firstSentence(s) {
+  s = (s || "").trim();
+  const m = s.match(/^[^。！？；\n]+[。！？；]?/);
+  return m ? m[0] : s;
+}
+function tierOf(g) {
+  const m = /^\s*(收藏级|结构候选)\s*[:：，,\-–—]?\s*/.exec(g.whyKeep || "");
+  if (m) return { tier: m[1], rest: (g.whyKeep || "").slice(m[0].length) || "—" };
+  return { tier: "", rest: g.whyKeep || "—" };
+}
+function tierBadge(t) {
+  return t === "收藏级"
+    ? '<span class="badge" style="background:#fff8e1;color:#f57f17;border:1px solid #ffe082">收藏级</span>'
+    : t === "结构候选"
+    ? '<span class="badge" style="background:#e3f2fd;color:#1565c0;border:1px solid #90caf9">结构候选</span>'
+    : "";
+}
+const TYPE_LABEL = { filler: "无效口水话", imagery: "美感没讲出来", engagement: "缺少观众参与感" };
+
+// ---- 与 review.html 相同的卡片模板（样例数据） ----
+function gsCard(g) {
+  const t = tierOf(g);
+  const reasonOne = firstSentence(t.rest);
+  const reasonExtra = t.rest.length > reasonOne.length
+    ? `<div style="font-size:12px;color:#555;line-height:1.7;margin-top:4px"><b>保留理由全文：</b>${esc(t.rest)}</div>` : "";
+  return `<div class="card" data-startms="${g.startMs}" data-tlabel="${esc(g.startLabel)}" style="background:#f8fff8;border:1px solid #e0f0e0;margin:0 0 8px;padding:10px 12px;cursor:pointer">
+    <div style="font-size:12px;color:#2e7d32;margin-bottom:4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">${tierBadge(t.tier)}<b>${esc(g.startLabel)} – ${esc(g.endLabel)}</b><span style="color:#999">（点击定位原文）</span>${g.hasGap ? '<span style="color:#999">引用有跳过…</span>' : ""}</div>
+    <div class="clamp2" style="font-size:13px;line-height:1.7;margin-bottom:4px">「${esc(g.text)}」</div>
+    <div class="clamp1" style="font-size:12px;color:#555;line-height:1.7;margin-bottom:6px">留：${esc(reasonOne)}</div>
+    <details><summary style="font-size:12px;color:#2e7d32;cursor:pointer">展开全文与解释</summary>
+    <div data-fulltext="1" style="font-size:13px;line-height:1.7;margin:6px 0">「${esc(g.text)}」${g.asrNotes ? `<span style="color:#e65100;font-size:12px">（ASR 说明：${esc(g.asrNotes)}）</span>` : ""}</div>
+    ${reasonExtra}
+    <div style="font-size:12px;color:#555;line-height:1.7"><b>可复用骨架：</b>${esc(g.reusableFrame)}</div>
+    <div style="font-size:12px;color:#555;line-height:1.7"><b>适用条件：</b>${esc(g.appliesTo)}</div>
+    </details>
+  </div>`;
+}
+function pbCard(p) {
+  const descOne = firstSentence(p.description || "");
+  const descExtra = (p.description || "").length > descOne.length
+    ? `<div style="font-size:12px;color:#555;line-height:1.7;margin-top:4px"><b>依据全文：</b>${esc(p.description)}</div>` : "";
+  return `<div class="card" data-startms="${p.startMs}" data-tlabel="${esc(p.startLabel)}" style="background:#fff8f0;border:1px solid #f0e0d0;margin:0 0 8px;padding:10px 12px;cursor:pointer">
+    <div style="font-size:12px;color:#e65100;margin-bottom:4px"><b>${esc(TYPE_LABEL[p.type] || p.type)}</b> · ${esc(p.startLabel)} – ${esc(p.endLabel)}（点击定位）</div>
+    <div class="clamp2" style="font-size:13px;line-height:1.7;margin-bottom:4px">「${esc(p.text)}」</div>
+    <div class="clamp1" style="font-size:12px;color:#555;line-height:1.7;margin-bottom:6px">${esc(descOne || "—")}</div>
+    <details><summary style="font-size:12px;color:#e65100;cursor:pointer">展开全文与依据</summary>
+    <div data-fulltext="1" style="font-size:13px;line-height:1.7;margin:6px 0">「${esc(p.text)}」</div>
+    ${descExtra}
+    </details>
+  </div>`;
+}
+function renderReport(r, mock, cached) {
+  const summary = (r.summary || "").trim();
+  const oneLiner = firstSentence(summary);
+  const summaryExtra = summary.length > oneLiner.length
+    ? `<details style="margin-top:4px"><summary style="font-size:12px;color:#888;cursor:pointer">展开完整结论</summary><div style="font-size:13px;line-height:1.7;color:#555;margin-top:4px">${esc(summary)}</div></details>` : "";
+  const gsList = r.goodScripts || [];
+  const gsTop = gsList.slice(0, 3).map(gsCard).join("");
+  const gsMore = gsList.length > 3
+    ? `<details style="margin-bottom:8px"><summary style="font-size:12px;color:#888;cursor:pointer">其余 ${gsList.length - 3} 条好话术（展开）</summary><div style="margin-top:6px">${gsList.slice(3).map(gsCard).join("")}</div></details>` : "";
+  const pbList = r.problems || [];
+  const pbFirst = pbList.length ? pbCard(pbList[0]) : '<div class="nodata">本段未发现明显问题</div>';
+  const pbMore = pbList.length > 1
+    ? `<details style="margin-bottom:8px"><summary style="font-size:12px;color:#888;cursor:pointer">其余 ${pbList.length - 1} 个问题（展开）</summary><div style="margin-top:6px">${pbList.slice(1).map(pbCard).join("")}</div></details>` : "";
+  const avList = r.pendingAV || [];
+  const avHtml = avList.length
+    ? `<details style="margin-bottom:8px"><summary style="font-size:12px;color:#888;cursor:pointer">待音视频分析（${avList.length}）</summary><div style="margin-top:6px">${avList.map(s =>
+        `<div style="font-size:12px;color:#999;margin-bottom:4px">• ${esc(s)}</div>`).join("")}</div></details>` : "";
+  return `<div class="card" style="background:#fff;border:1px solid #e8e8e8;margin:0;padding:14px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <b style="font-size:14px">AI 分析</b>
+      ${mock ? '<span class="badge" style="background:#fff3e0;color:#e65100">MOCK</span>' : ""}
+      ${cached ? '<span class="badge" style="background:#e8f5e9;color:#2e7d32">缓存</span>' : ""}
+      <span style="font-size:11px;color:#999">样例数据 · 离线</span>
+    </div>
+    <div class="clamp2" style="font-size:13px;line-height:1.7;font-weight:600">${esc(oneLiner) || "—"}</div>
+    ${summaryExtra}
+    <h4>值得复用的好话术（点击卡片定位原文）</h4>
+    <div>${gsTop || '<div class="nodata">本段未发现值得复用的好话术</div>'}${gsMore}</div>
+    <h4>问题提示（点击卡片定位原文）</h4>
+    <div>${pbFirst}${pbMore}</div>
+    ${avHtml}
+    <details style="margin-bottom:8px"><summary style="font-size:12px;color:#888;cursor:pointer">下次怎么验证（展开）</summary><div style="font-size:13px;line-height:1.7;color:#555;margin-top:4px">${esc(r.verification || "—")}</div></details>
+  </div>`;
+}
+
+// ---- 样例数据（虚构，仅用于版式验证） ----
+const LONG = "这条围巾拿在手里你们就能感觉到，它是真的轻，冬天戴大衣围它完全不压脖子，一点都不臃肿，而且它是120支的高密织造，摸上去又细又密，商场里同类型的没有七八百下不来，今天直播间直接补贴两百，到手只要五九九，还送运费险";
+const sampleA = {
+  summary: "本段主播围绕双面桑蚕丝大披肩做了约两分钟的价值铺垫：先以轻盈不臃肿切入体感，接着用高密织造参数建立专业感，再以商场同类价格对比收口。整体说服链条完整，但价格对比缺少可核实信息，微米数表述存在跨材质比较风险，结尾处转写被截断。",
+  goodScripts: [
+    { startMs: 1000, startLabel: "0:01", endLabel: "0:45", hasGap: false, text: LONG, asrNotes: "0:23 处疑似'压脖子'误作'鸭脖子'",
+      whyKeep: "收藏级：先给体感（轻、不臃肿）解决'冬天戴着累'的顾虑，再用120支参数建立专业背书，最后价格落差收口，层层递进无一句废话",
+      reusableFrame: "先说[体感痛点]→拿[工艺参数]背书→给[价格落差]收口", appliesTo: "高客单价真丝/羊绒类价值铺垫段" },
+    { startMs: 46000, startLabel: "0:46", endLabel: "1:10", hasGap: true, text: "这个提花你们近看，它是立体的，有浮雕感，戴在脖子上，别人离老远就能看到这个纹路，特别显气质",
+      whyKeep: "结构候选：把'提花工艺'翻译成了'立体浮雕感'和'显气质'的可想象效果，术语转人话的骨架值得学",
+      reusableFrame: "讲[工艺做法]→翻译成[可想象的效果]→落到[佩戴场景]", appliesTo: "有纹样/提花工艺的产品展示段" },
+    { startMs: 70000, startLabel: "1:10", endLabel: "1:20", hasGap: false, text: "姐妹们先别划走，接下来这三分钟，我只讲这一条围巾",
+      whyKeep: "结构候选：开场钩子直接圈人并预告时长，留人话术结构清晰", reusableFrame: "叫停[划走动作]→预告[时长+内容]", appliesTo: "换品开场" },
+    { startMs: 80000, startLabel: "1:20", endLabel: "1:35", hasGap: false, text: "它这个流苏是手工抽须的，一根一根抽出来的，不是机器切的边，所以你看它这个须子，根根分明",
+      whyKeep: "结构候选：手工vs机器的对比建立价值感", reusableFrame: "说[手工做法]→对比[机器做法]→指[眼见细节]", appliesTo: "手工细节展示" },
+    { startMs: 95000, startLabel: "1:35", endLabel: "1:50", hasGap: false, text: "颜色你们放心，这个灰蓝色不挑肤色，黄皮白皮都能戴",
+      whyKeep: "结构候选：一句话打消肤色顾虑", reusableFrame: "直接回应[肤色顾虑]→给[适用人群]", appliesTo: "颜色介绍" },
+  ],
+  problems: [
+    { startMs: 110000, startLabel: "1:50", endLabel: "2:00", type: "filler", text: "这个真的很好，这个真的很好，大家相信我，这个品质真的很好的，真的很好的",
+      description: "同一句'真的很好'重复四遍，没有增加任何新的信息、体感或购买理由，属于无效口水话。建议换成具体的使用场景或触感描述。" },
+    { startMs: 120000, startLabel: "2:00", endLabel: "2:10", type: "imagery",
+      text: "这个花型很好看，特别好看", description: "只说了'好看'，没有把花型、颜色、垂感讲成能想象的画面。" },
+    { startMs: 125000, startLabel: "2:05", endLabel: "2:15", type: "engagement",
+      text: "喜欢的姐妹直接拍", description: "催单段直接收口，没有给观众代入比较的机会。" },
+  ],
+  pendingAV: ["主播说'轻盈'时的语气和表情是否真诚，待音视频确认", "展示围巾垂感时的镜头距离是否足够近，待确认"],
+  verification: "下次开播观察：1）收藏级话术复用后，2分钟内的停留时长是否提升；2）'补贴200到手599'的话术是否还有观众问价格（弹幕关键词'多少钱'出现次数）；3）对比使用结构候选骨架与原话术的转化差异。以上均可在复盘页转写与弹幕中验证，无需额外数据。",
+};
+const sampleB = { summary: "本段只有商品切换，无有效讲解。", goodScripts: [], problems: [], pendingAV: [], verification: "" };
+
+document.getElementById("sampleA").innerHTML = renderReport(sampleA, true, false);
+document.getElementById("sampleB").innerHTML = renderReport(sampleB, true, true);
+
+// 点击卡片 → 样例定位提示；点展开控件不触发
+let toastTimer = null;
+function toast(msg) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.style.display = "block";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.style.display = "none", 1800);
+}
+document.querySelectorAll("[data-startms]").forEach(el => {
+  el.addEventListener("click", (ev) => {
+    if (ev.target.closest("details, summary, button, a, input")) return;
+    toast("定位到 " + (el.dataset.tlabel || "") + "（样例演示：真实页会跳转时间轴）");
+  });
+});
+
+// 数据完整性自检：每张卡片的全文都必须在 DOM 里（收起只是视觉折叠）
+(function selfCheck() {
+  const cards = document.querySelectorAll("[data-startms]");
+  const fulls = document.querySelectorAll("[data-fulltext]");
+  const ok = cards.length === 8 && fulls.length === 8;
+  document.getElementById("selfcheck").textContent =
+    "数据完整性自检：" + (ok ? "通过（8 张卡片，每张的全文都在 DOM 中，收起未删除数据）" : "异常：卡片 " + cards.length + " / 全文 " + fulls.length);
+})();
+</script>
+</body>
+</html>

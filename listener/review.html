@@ -6,6 +6,9 @@
 <title>直播复盘 - LiveRoomListener</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  /* 一屏报告：默认只露两行，其余靠展开（纯视觉收起，不删数据） */
+  .clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .clamp1 { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
   body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f5f6f8; color: #333; font-size: 14px; }
   header { background: #1a1d23; color: #fff; padding: 14px 20px; display: flex; align-items: center; gap: 10px; }
   header h1 { font-size: 16px; font-weight: 600; }
@@ -914,11 +917,16 @@ function renderAnalysisResult(sessionId, a, feedback) {
 
   const gsCard = (g) => {
     const t = tierOf(g);
+    const reasonOne = firstSentence(t.rest);
+    const reasonExtra = t.rest.length > reasonOne.length
+      ? `<div style="font-size:12px;color:#555;line-height:1.7;margin-top:4px"><b>保留理由全文：</b>${esc(t.rest)}</div>` : "";
     return `<div class="card" data-startms="${g.startMs != null ? g.startMs : ""}" style="background:#f8fff8;border:1px solid #e0f0e0;margin:0 0 8px;padding:10px 12px;cursor:pointer">
       <div style="font-size:12px;color:#2e7d32;margin-bottom:4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">${tierBadge(t.tier)}<b>${esc(g.startLabel || "")} – ${esc(g.endLabel || "")}</b><span style="color:#999">（点击定位原文）</span>${g.hasGap ? '<span style="color:#999">引用有跳过…</span>' : ""}</div>
-      <div style="font-size:13px;line-height:1.7;margin-bottom:6px">「${esc(g.text || "")}」${g.asrNotes ? `<span style="color:#e65100;font-size:12px">（${esc(g.asrNotes)}）</span>` : ""}</div>
-      <details><summary style="font-size:12px;color:#2e7d32;cursor:pointer">展开解释</summary>
-      <div style="font-size:12px;color:#555;line-height:1.7;margin-top:4px"><b>为什么值得留：</b>${esc(t.rest)}</div>
+      <div class="clamp2" style="font-size:13px;line-height:1.7;margin-bottom:4px">「${esc(g.text || "")}」</div>
+      <div class="clamp1" style="font-size:12px;color:#555;line-height:1.7;margin-bottom:6px">留：${esc(reasonOne)}</div>
+      <details><summary style="font-size:12px;color:#2e7d32;cursor:pointer">展开全文与解释</summary>
+      <div style="font-size:13px;line-height:1.7;margin:6px 0">「${esc(g.text || "")}」${g.asrNotes ? `<span style="color:#e65100;font-size:12px">（ASR 说明：${esc(g.asrNotes)}）</span>` : ""}</div>
+      ${reasonExtra}
       <div style="font-size:12px;color:#555;line-height:1.7"><b>可复用骨架：</b>${esc(g.reusableFrame || "—")}</div>
       <div style="font-size:12px;color:#555;line-height:1.7"><b>适用条件：</b>${esc(g.appliesTo || "—")}</div>
       </details>
@@ -929,12 +937,20 @@ function renderAnalysisResult(sessionId, a, feedback) {
   const gsMore = gsList.length > 3
     ? `<details style="margin-bottom:8px"><summary style="font-size:12px;color:#888;cursor:pointer">其余 ${gsList.length - 3} 条好话术（展开）</summary><div style="margin-top:6px">${gsList.slice(3).map(gsCard).join("")}</div></details>` : "";
 
-  const pbCard = (p) =>
-    `<div class="card" data-startms="${p.startMs != null ? p.startMs : ""}" style="background:#fff8f0;border:1px solid #f0e0d0;margin:0 0 8px;padding:10px 12px;cursor:pointer">
+  const pbCard = (p) => {
+    const descOne = firstSentence(p.description || "");
+    const descExtra = (p.description || "").length > descOne.length
+      ? `<div style="font-size:12px;color:#555;line-height:1.7;margin-top:4px"><b>依据全文：</b>${esc(p.description)}</div>` : "";
+    return `<div class="card" data-startms="${p.startMs != null ? p.startMs : ""}" style="background:#fff8f0;border:1px solid #f0e0d0;margin:0 0 8px;padding:10px 12px;cursor:pointer">
       <div style="font-size:12px;color:#e65100;margin-bottom:4px"><b>${esc(PROBLEM_TYPE_LABEL[p.type] || p.type)}</b> · ${esc(p.startLabel || "")} – ${esc(p.endLabel || "")}（点击定位）</div>
-      <div style="font-size:13px;line-height:1.7">「${esc(p.text || "")}」</div>
-      <div style="font-size:12px;color:#555;line-height:1.7;margin-top:4px">${esc(p.description || "—")}</div>
+      <div class="clamp2" style="font-size:13px;line-height:1.7;margin-bottom:4px">「${esc(p.text || "")}」</div>
+      <div class="clamp1" style="font-size:12px;color:#555;line-height:1.7;margin-bottom:6px">${esc(descOne || "—")}</div>
+      <details><summary style="font-size:12px;color:#e65100;cursor:pointer">展开全文与依据</summary>
+      <div style="font-size:13px;line-height:1.7;margin:6px 0">「${esc(p.text || "")}」</div>
+      ${descExtra}
+      </details>
     </div>`;
+  };
   const pbList = r.problems || [];
   const pbFirst = pbList.length ? pbCard(pbList[0]) : '<div class="nodata">本段未发现明显问题</div>';
   const pbMore = pbList.length > 1
@@ -954,16 +970,15 @@ function renderAnalysisResult(sessionId, a, feedback) {
         ${a.cached ? '<span class="badge" style="background:#e8f5e9;color:#2e7d32">缓存</span>' : ""}
         <span style="font-size:11px;color:#999">${esc(a.rangeLabel)} · ${esc(a.model)} · ${esc(a.ruleVersion)}</span>
       </div>
-      <div style="font-size:13px;line-height:1.7;font-weight:600">${esc(oneLiner) || "—"}</div>
+      <div class="clamp2" style="font-size:13px;line-height:1.7;font-weight:600">${esc(oneLiner) || "—"}</div>
       ${summaryExtra}
       <div style="font-size:11px;color:#aaa;margin:6px 0">时间范围为引用记录的起止时间（末条记录时间≠话术结束时间），… 表示引用中间有跳过</div>
       <h4 style="margin:10px 0 4px">值得复用的好话术（点击卡片定位原文）</h4>
       <div>${gsTop || '<div class="nodata">本段未发现值得复用的好话术</div>'}${gsMore}</div>
-      <h4 style="margin:10px 0 4px">优先改进</h4>
+      <h4 style="margin:10px 0 4px">问题提示（点击卡片定位原文）</h4>
       <div>${pbFirst}${pbMore}</div>
       ${avHtml}
-      <h4 style="margin:10px 0 4px">下次怎么验证</h4>
-      <div style="font-size:13px;line-height:1.7">${esc(r.verification || "—")}</div>
+      <details style="margin-bottom:8px"><summary style="font-size:12px;color:#888;cursor:pointer">下次怎么验证（展开）</summary><div style="font-size:13px;line-height:1.7;color:#555;margin-top:4px">${esc(r.verification || "—")}</div></details>
       <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="fb-btn" data-t="useful" style="padding:5px 14px;font-size:12px;border:1px solid #ddd;border-radius:8px;background:#fff;cursor:pointer">有用</button>
         <button class="fb-btn" data-t="inaccurate" style="padding:5px 14px;font-size:12px;border:1px solid #ddd;border-radius:8px;background:#fff;cursor:pointer">不准确</button>
