@@ -196,11 +196,22 @@ const inflight = new Map();
 
 // ---------- 模型输出校验（分析标准 v0.1） ----------
 // 服务端根据 refs 自动拼接还原完整上下文原话与起止毫秒时间，模型不自己拼长句
+// 防断章：先按 atMs 升序排（防模型乱序）；编号不连续处用 … 隔开，不静默拼成连续讲话
 function enrichRefs(item, evidenceByRef) {
   const srcs = item.refs.map(r => evidenceByRef.get(r)).filter(Boolean);
   srcs.sort((a, b) => a.atMs - b.atMs);
-  const texts = srcs.map(s => String(s.text || s.name || (s.online != null ? s.online : "")).trim());
-  item.text = texts.join("");
+  const nums = srcs.map(s => parseInt(String(s.ref).split("_")[1], 10));
+  const parts = [];
+  let hasGap = false;
+  srcs.forEach((s, i) => {
+    if (i > 0 && Number.isFinite(nums[i]) && Number.isFinite(nums[i - 1]) && nums[i] !== nums[i - 1] + 1) {
+      parts.push("…");
+      hasGap = true;
+    }
+    parts.push(String(s.text || s.name || (s.online != null ? s.online : "")).trim());
+  });
+  item.text = parts.join("");
+  item.hasGap = hasGap; // true 表示中间有跳过，非连续引用
   item.startMs = srcs[0].atMs;
   item.endMs = srcs[srcs.length - 1].atMs;
   item.startLabel = fmtLabel(item.startMs);
@@ -234,29 +245,39 @@ function validateModelOutput(result, evidenceByRef) {
     if (result.verification && result.verification.length > MAX_FIELD_CHARS) errors.push("verification 超长");
     if (errors.length) return { ok: false, errors };
 
-    const checkRefs = (refs, where) => {
+    const checkRefs = (refs, where, opts) => {
+      const allowedPrefixes = (opts && opts.allowedPrefixes) || null;
       if (!Array.isArray(refs) || refs.length === 0) { errors.push(`${where} refs 非空`); return false; }
+      // GPT 评审：拒绝重复引用
+      if (new Set(refs).size !== refs.length) { errors.push(`${where} refs 有重复`); return false; }
       const prefixes = new Set();
       for (const r of refs) {
         if (typeof r !== "string" || !evidenceByRef.has(r)) { errors.push(`${where} 引用了不存在的 ${r}`); return false; }
         prefixes.add(refPrefix(r));
       }
       if (prefixes.size > 1) { errors.push(`${where} refs 应指向同一类型记录`); return false; }
+      // GPT 评审：好话术原文限定来自转写，弹幕不能冒充主播说的话
+      if (allowedPrefixes && ![...prefixes].every(p => allowedPrefixes.includes(p))) {
+        errors.push(`${where} refs 类型不符合要求（仅允许 ${allowedPrefixes.join("/")}）`); return false;
+      }
       return true;
     };
 
     for (const [i, g] of (result.goodScripts || []).entries()) {
       const where = `goodScripts[${i}]`;
       if (!g || typeof g !== "object") { errors.push(`${where} 条目非法`); continue; }
-      if (!checkRefs(g.refs, where)) continue;
+      // 好话术原文必须来自转写（t_），弹幕可作语境但不能冒充主播说的话
+      if (!checkRefs(g.refs, where, { allowedPrefixes: ["t"] })) continue;
       for (const f of ["whyKeep", "reusableFrame", "appliesTo"]) {
         if (typeof g[f] !== "string" || !g[f].trim() || g[f].length > MAX_FIELD_CHARS) {
           errors.push(`${where} ${f} 非法`); break;
         }
       }
-      // 可复用骨架严禁空洞大词：只由通用词组成、没有具体槽位则拒绝
+      // 可复用骨架严禁空洞大词：只由通用词组成、且没有任何槽位符号时才打回；
+      // 带 [ ] / 【 】 / → 的具体骨架一律放行（Gemini 评审：防误杀）
       const frame = (g.reusableFrame || "").trim();
-      if (frame && !frame.includes("[") && !frame.includes("→") && EMPTY_FRAME_RE.test(frame))
+      const hasSlot = frame.includes("[") || frame.includes("【") || frame.includes("→");
+      if (frame && !hasSlot && EMPTY_FRAME_RE.test(frame))
         errors.push(`${where} reusableFrame 过于空洞，需带槽位的具体句式`);
       if (g.asrNotes != null && typeof g.asrNotes !== "string") errors.push(`${where} asrNotes 非法`);
       if (!errors.some(e => e.startsWith(where))) enrichRefs(g, evidenceByRef);
@@ -305,7 +326,7 @@ function buildPrompt(evidence, baseRulesText, scarfRulesText) {
     数据说明: evidence.notes,
   };
   const rulesText = `${baseRulesText}\n\n---\n\n${scarfRulesText}`;
-  return `${rulesText}\n\n## 本次分析的证据（JSON）\n\`\`\`json\n${JSON.stringify(ev, null, 1)}\n\`\`\`\n\n请只输出 JSON，不要输出其他内容，格式：\n{"summary":"…","goodScripts":[{"refs":["t_0001","t_0002"],"whyKeep":"…","reusableFrame":"…","appliesTo":"…","asrNotes":""}],"problems":[{"type":"filler","refs":["t_0005"],"description":"…"}],"pendingAV":["…"],"verification":"…"}\n注意：好话术/问题用 refs 数组指向连续记录，不要自己拼接长句，引文由服务端自动还原；确实没有好话术或明显问题时对应数组返回 [] 并如实说明。`;
+  return `${rulesText}\n\n## 本次分析的证据（JSON）\n\`\`\`json\n${JSON.stringify(ev, null, 1)}\n\`\`\`\n\n请只输出 JSON，不要输出其他内容，格式：\n{"summary":"…","goodScripts":[{"refs":["t_0001","t_0002"],"whyKeep":"…","reusableFrame":"…","appliesTo":"…","asrNotes":""}],"problems":[{"type":"filler","refs":["t_0005"],"description":"…"}],"pendingAV":["…"],"verification":"…"}\n注意：好话术 refs 必须是**转写记录**（t_），弹幕可作语境但不能冒充主播说的话；refs 指向连续记录，不要自己拼接长句，引文由服务端自动还原；编号不连续处自动用 … 隔开，严禁重复引用；确实没有好话术或明显问题时对应数组返回 [] 并如实说明。`;
 }
 
 // ---------- 模型调用 ----------

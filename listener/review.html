@@ -866,7 +866,30 @@ const PROBLEM_TYPE_LABEL = { filler: "无效口水话", imagery: "美感没讲�
 
 function renderAnalysisResult(sessionId, a, feedback) {
   const r = a.result || {};
+  // GPT 评审：兼容旧版报告（v0.1 标准之前只有 evidence/suggestions 字段）
+  const isLegacy = !Array.isArray(r.goodScripts) && !Array.isArray(r.problems) &&
+    (Array.isArray(r.evidence) || Array.isArray(r.suggestions));
+  if (isLegacy) {
+    const evHtml = (r.evidence || []).map(e =>
+      `<div style="font-size:12px;color:#555;line-height:1.7;margin-bottom:4px">• ${esc(e.quote || e.text || JSON.stringify(e))}</div>`).join("");
+    const sgHtml = (r.suggestions || []).map(s =>
+      `<div style="font-size:12px;color:#555;line-height:1.7;margin-bottom:4px">• ${esc(typeof s === "string" ? s : (s.text || s.description || JSON.stringify(s)))}</div>`).join("");
+    $("tlAnalysisResult").innerHTML = `
+      <div class="card" style="background:#fff;border:1px solid #e8e8e8;margin:0">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <b style="font-size:14px">AI 分析</b>
+          <span class="badge" style="background:#f3e5f5;color:#6a1b9a">旧版报告</span>
+          <span style="font-size:11px;color:#999">${esc(a.rangeLabel)} · ${esc(a.model)} · ${esc(a.ruleVersion || "")}</span>
+        </div>
+        <div style="font-size:12px;color:#e65100;margin-bottom:8px">这是分析标准 v0.1 之前的旧版报告，请重新分析以获得好话术/问题分块结果。</div>
+        ${evHtml ? `<h4 style="margin:10px 0 4px">原报告内容</h4><div>${evHtml}</div>` : ""}
+        ${sgHtml ? `<h4 style="margin:10px 0 4px">原报告建议</h4><div>${sgHtml}</div>` : ""}
+        ${r.verification ? `<h4 style="margin:10px 0 4px">下次怎么验证</h4><div style="font-size:13px;line-height:1.7">${esc(r.verification)}</div>` : ""}
+      </div>`;
+    return;
+  }
   // 好话术：服务端已拼接 text + 起止时间；点击定位到起始时间
+  // GPT 评审：时间范围口径为"引用记录的起止时间"，endMs 为末条记录时间（不一定是话术结束时间）
   const gsHtml = (r.goodScripts || []).map((g, i) =>
     `<div class="card" data-startms="${g.startMs != null ? g.startMs : ""}" style="background:#f8fff8;border:1px solid #e0f0e0;margin:0 0 8px;padding:10px 12px;cursor:pointer">
       <div style="font-size:12px;color:#2e7d32;margin-bottom:4px"><b>好话术 ${i + 1}</b> · ${esc(g.startLabel || "")} – ${esc(g.endLabel || "")}（点击定位）</div>
@@ -896,6 +919,7 @@ function renderAnalysisResult(sessionId, a, feedback) {
       <h4 style="margin:10px 0 4px">这段发生了什么</h4>
       <div style="font-size:13px;line-height:1.7">${esc(r.summary || "—")}</div>
       <h4 style="margin:10px 0 4px">值得复用的好话术（点击定位）</h4>
+      <div style="font-size:11px;color:#aaa;margin:-2px 0 6px">时间范围为引用记录的起止时间（末条记录时间≠话术结束时间），… 表示引用中间有跳过</div>
       <div>${gsHtml || '<div class="nodata">本段未发现值得复用的好话术</div>'}</div>
       <h4 style="margin:10px 0 4px">问题分析（点击定位）</h4>
       <div>${pbHtml || '<div class="nodata">本段未发现明显问题</div>'}</div>

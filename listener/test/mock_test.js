@@ -894,6 +894,48 @@ async function testAI002() {
     problems: [],
   }, byRef);
   assert.equal(v.ok, false);
+  // GPT 评审：好话术引用弹幕（d_）→ 不通过，弹幕不能冒充主播说的话
+  v = Analysis.validateModelOutput({
+    summary: "s", verification: "v",
+    goodScripts: [{ refs: ["d_0001"], whyKeep: "k", reusableFrame: "先问[x]→给[y]", appliesTo: "a" }],
+    problems: [],
+  }, byRef);
+  assert.equal(v.ok, false);
+  // GPT 评审：refs 重复 → 不通过
+  v = Analysis.validateModelOutput({
+    summary: "s", verification: "v",
+    goodScripts: [{ refs: ["t_0001", "t_0001"], whyKeep: "k", reusableFrame: "先问[x]→给[y]", appliesTo: "a" }],
+    problems: [],
+  }, byRef);
+  assert.equal(v.ok, false);
+  // GPT 评审：refs 不连续 → 自动用 … 补齐，不静默拼成连续讲话
+  const gapOut = {
+    summary: "s", verification: "v",
+    goodScripts: [{ refs: ["t_0003", "t_0001"], whyKeep: "k", reusableFrame: "先问[x]→给[y]", appliesTo: "a" }],
+    problems: [],
+  };
+  v = Analysis.validateModelOutput(gapOut, byRef);
+  assert.equal(v.ok, true);
+  const gGap = gapOut.goodScripts[0];
+  assert.equal(gGap.hasGap, true);
+  assert.ok(gGap.text.includes("…"), "不连续引用中间用 … 隔开");
+  assert.equal(gGap.startMs, 100000, "乱序引用按 atMs 排序后 startMs 取最小");
+  // Gemini 评审：reusableFrame 含具体槽位但出现痛点/卖点/促单字眼 → 放行不误杀
+  v = Analysis.validateModelOutput({
+    summary: "s", verification: "v",
+    goodScripts: [{ refs: ["t_0001"], whyKeep: "k",
+      reusableFrame: "先用[大衣穿搭痛点]引入→对比[羊绒体感]讲清真丝拉绒卖点→最后用[工期稀缺]促单",
+      appliesTo: "a" }],
+    problems: [],
+  }, byRef);
+  assert.equal(v.ok, true);
+  // Gemini 评审：【】槽位同样放行
+  v = Analysis.validateModelOutput({
+    summary: "s", verification: "v",
+    goodScripts: [{ refs: ["t_0001"], whyKeep: "k", reusableFrame: "先问【穿搭困扰】→给【试戴指令】", appliesTo: "a" }],
+    problems: [],
+  }, byRef);
+  assert.equal(v.ok, true);
   // reusableFrame 空洞大词 → 不通过
   v = Analysis.validateModelOutput({
     summary: "s", verification: "v",
