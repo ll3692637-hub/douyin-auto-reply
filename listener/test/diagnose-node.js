@@ -17,6 +17,12 @@
  * 日志铁律：绝不输出密钥和直播原文，只输出计数、耗时、状态、错误码。
  * 超时口径：单次耗时只是样本，不能证明 30 秒长期够用或不够用；
  * 90 秒仍超时也不等于"改成 90 秒就解决"，需另行排查。
+ *
+ * 离线结构检查（不联网、不读密钥）：
+ *   node test/diagnose-node.js --inspect <响应文件>
+ * 只输出：HTTP 状态、耗时、顶层字段名、finish_reason、正文字符数、
+ * reasoning_content/reasoning_tokens 有无及长度、期望字段缺失情况、
+ * 是否存在多包一层的嵌套。不打印正文内容。
  */
 "use strict";
 const fs = require("fs");
@@ -77,7 +83,59 @@ function rawChatOnce({ apiBase, apiKey, model, prompt, timeoutMs }) {
   });
 }
 
+function inspectFile(file) {
+  if (!file || !fs.existsSync(file)) {
+    console.error("用法: node test/diagnose-node.js --inspect <响应文件>");
+    process.exit(1);
+  }
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  console.log("HTTP:", saved.status, " 耗时:", saved.ms, "ms  模型:", saved.model, " 时间:", saved.at);
+  let j = null;
+  try { j = JSON.parse(saved.raw); } catch { /* 非 JSON */ }
+  if (!j) { console.log("响应体不是合法 JSON"); return; }
+  console.log("响应顶层字段名:", Object.keys(j).join(", "));
+  const choice = (j.choices && j.choices[0]) || {};
+  console.log("finish_reason:", choice.finish_reason);
+  const msg = choice.message || {};
+  const content = msg.content;
+  console.log("正文类型:", Array.isArray(content) ? "数组" : typeof content,
+    " 正文字符数:", typeof content === "string" ? content.length : "-");
+  const rc = msg.reasoning_content;
+  console.log("reasoning_content:", rc == null ? "无" : ("有，" + String(rc).length + " 字符"));
+  const det = j.usage && j.usage.completion_tokens_details;
+  console.log("reasoning_tokens:", det && typeof det.reasoning_tokens === "number" ? det.reasoning_tokens : "无");
+  const u = j.usage || {};
+  console.log("usage: prompt", u.prompt_tokens || 0, "/ completion", u.completion_tokens || 0, "/ total", u.total_tokens || 0);
+  let inner = null;
+  try { inner = JSON.parse(content); console.log("正文可解析为 JSON"); }
+  catch { console.log("正文不是合法 JSON"); return; }
+  if (!inner || typeof inner !== "object" || Array.isArray(inner)) { console.log("正文 JSON 不是对象"); return; }
+  console.log("正文顶层字段名:", Object.keys(inner).join(", "));
+  for (const f of ["summary", "goodScripts", "problems", "pendingAV", "verification"]) {
+    const v = inner[f];
+    console.log("  " + f + ":", v == null ? "缺失"
+      : ("存在（" + (Array.isArray(v) ? "数组×" + v.length : typeof v) + "）"));
+  }
+  for (const k of Object.keys(inner)) {
+    const v = inner[k];
+    if (v && typeof v === "object" && !Array.isArray(v) && v.goodScripts != null) {
+      console.log("  发现嵌套: 字段 \"" + k + "\" 内含 goodScripts → 疑似多包了一层");
+    }
+  }
+}
+
+function saveRawResponse({ status, ms, raw, model }) {
+  const file = path.join(APP_SUPPORT, "diag-response-" + Date.now() + ".json");
+  fs.writeFileSync(file, JSON.stringify({ status, ms, raw, model, at: new Date().toISOString() }));
+  console.log("  原始响应已保存:", file, "（离线检查: node test/diagnose-node.js --inspect <文件>）");
+}
+
 async function main() {
+  // 离线结构检查：不联网、不读密钥
+  if (process.argv[2] === "--inspect") {
+    inspectFile(process.argv[3]);
+    return;
+  }
   const { apiBase, apiKey, model } = loadSecrets();
   console.log("apiBase:", apiBase);
   console.log("model:", model);
@@ -173,14 +231,27 @@ async function main() {
     return;
   }
   {
-    const t0 = Date.now();
-    try {
-      const { content, usage } = await Analysis.callDeepSeek({
-        apiBase, apiKey, model, prompt, timeoutMs: DIAG_TIMEOUT_MS,
-      });
-      const ms = Date.now() - t0;
+    // 用与 callDeepSeek 相同请求体的原始调用：业务函数本身已在 [1] 验证，
+    // 这里需要保留 finish_reason、reasoning_content 等原始字段供结构检查
+    console.log("  说明: 本步用与 callDeepSeek 相同请求体的原始调用（保留原始响应字段）；业务函数本身已在 [1] 验证。");
+    const r = await rawChatOnce({ apiBase, apiKey, model, prompt, timeoutMs: DIAG_TIMEOUT_MS });
+    const ms = r.ms;
+    if (!r.ok) {
+      console.log("  结果: 失败，本次耗时", ms, "ms，", r.err ? ("错误: " + r.err) : ("HTTP " + r.status));
+      if (r.raw) saveRawResponse({ status: r.status, ms, raw: r.raw, model });
+      if (r.err === "timeout") {
+        console.log("  超时参考: 90 秒上限内仍超时。不能据此认定改参数即可解决；可能涉及模型生成慢或网关排队，需进一步排查。");
+      }
+    } else {
+      saveRawResponse({ status: r.status, ms, raw: r.raw, model });
+      let j = null;
+      try { j = JSON.parse(r.raw); } catch { /* 非 JSON */ }
+      const msg = j && j.choices && j.choices[0] && j.choices[0].message;
+      const content = msg && msg.content;
+      const usage = (j && j.usage) || {};
       console.log("  结果: 成功，本次耗时", ms, "ms；usage prompt/completion:",
-        (usage.prompt_tokens || 0) + "/" + (usage.completion_tokens || 0));
+        (usage.prompt_tokens || 0) + "/" + (usage.completion_tokens || 0),
+        "；finish_reason:", j && j.choices && j.choices[0] && j.choices[0].finish_reason);
       let verdict;
       try {
         const parsed = JSON.parse(content);
@@ -192,12 +263,6 @@ async function main() {
       console.log("  输出校验:", verdict);
       console.log("  超时参考: 本次", ms, "ms。单次样本不能证明 30 秒长期够用或不够用；",
         ms > 30000 ? "本次已超过 30 秒，说明现超时对这类请求至少偶发不足，可考虑放宽到 90 秒再观察。" : "本次在 30 秒内，但样本不足以下结论，建议多测几场再决定。");
-    } catch (e) {
-      const ms = Date.now() - t0;
-      console.log("  结果: 失败，本次耗时", ms, "ms，错误:", e.message);
-      if (/超时/.test(e.message)) {
-        console.log("  超时参考: 90 秒上限内仍超时。不能据此认定改参数即可解决；可能涉及模型生成慢或网关排队，需进一步排查。");
-      }
     }
   }
 }
