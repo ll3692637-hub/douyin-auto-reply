@@ -542,6 +542,7 @@ module.exports = {
   buildCacheKey, ruleContentHash,
   validateModelOutput, buildEvidenceByRef, enrichRefs,
   buildPrompt, analyzeRange, saveFeedback,
+  callDeepSeek, // 测试用：Node 诊断脚本复用业务原函数
   listAnalyses, getAnalysis, listFeedback,
   _inflight: inflight, // 测试用
 };
