@@ -879,6 +879,7 @@ function renderAnalysisResult(sessionId, a, feedback) {
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
           <b style="font-size:14px">AI 分析</b>
           <span class="badge" style="background:#f3e5f5;color:#6a1b9a">旧版报告</span>
+          ${a.mock ? '<span class="badge" style="background:#fff3e0;color:#e65100">MOCK</span>' : ""}
           <span style="font-size:11px;color:#999">${esc(a.rangeLabel)} · ${esc(a.model)} · ${esc(a.ruleVersion || "")}</span>
         </div>
         <div style="font-size:12px;color:#e65100;margin-bottom:8px">这是分析标准 v0.1 之前的旧版报告，请重新分析以获得好话术/问题分块结果。</div>
