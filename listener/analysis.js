@@ -20,7 +20,8 @@ const https = require("https");
 
 const RULE_VERSION = "ai-rules-base-v1+scarf-v1";
 const MAX_EVIDENCE_CHARS = 20000;
-const MODEL_TIMEOUT_MS = 90000; // 2026-10-20 实测真实分析耗时约 47s，30s 不够，调为 90s；格式校验保留不变
+const MODEL_TIMEOUT_MS = 90000; // 2026-10-20 实测真实分析耗时 47s~85s 不等，30s 不够，调为 90s；格式校验保留不变
+// 注意：已观测到 84.8s 接近 90s 上限，样本少，稳定性未验收；超时失败时不自动重试（避免重复计费）
 const MAX_FIELD_CHARS = 4000; // 模型单字段长度上限
 const PROBLEM_TYPES = ["filler", "imagery", "engagement"]; // 无效口水话/美感没讲出来/缺少观众参与感
 // 可复用骨架空洞模式：只由通用大词和连接符组成、没有具体槽位

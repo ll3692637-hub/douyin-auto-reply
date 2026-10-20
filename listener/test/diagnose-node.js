@@ -92,7 +92,7 @@ function inspectFile(file) {
     process.exit(1);
   }
   const saved = JSON.parse(fs.readFileSync(file, "utf8"));
-  console.log("HTTP:", saved.status, " 耗时:", saved.ms, "ms  模型:", saved.model, " thinkingDisabled:", saved.thinkingDisabled ? "是" : "否/未知", " 时间:", saved.at);
+  console.log("HTTP:", saved.status, " 耗时:", saved.ms, "ms  模型:", saved.model, " thinkingDisableRequested:", saved.thinkingDisableRequested ? "是" : "否/未知", " 时间:", saved.at);
   let j = null;
   try { j = JSON.parse(saved.raw); } catch { /* 非 JSON */ }
   if (!j) { console.log("响应体不是合法 JSON"); return; }
@@ -127,10 +127,13 @@ function inspectFile(file) {
   }
 }
 
-function saveRawResponse({ status, ms, raw, model, thinkingDisabled }) {
+function saveRawResponse({ status, ms, raw, model, thinkingDisableRequested }) {
+  // thinkingDisableRequested 只表示"请求里发送了 thinking:{type:'disabled'}"，
+  // 不表示思考真的被关闭：2026-10-20 实测该网关未按预期处理
+  // （默认 4153 思考 tokens / 发送后 4790），业务不启用此参数
   const file = path.join(APP_SUPPORT, "diag-response-" + Date.now() + ".json");
   // 仅本机保存、权限 600；目录在仓库外，不进 Git；日志不打印正文
-  fs.writeFileSync(file, JSON.stringify({ status, ms, raw, model, thinkingDisabled: !!thinkingDisabled, at: new Date().toISOString() }), { mode: 0o600 });
+  fs.writeFileSync(file, JSON.stringify({ status, ms, raw, model, thinkingDisableRequested: !!thinkingDisableRequested, at: new Date().toISOString() }), { mode: 0o600 });
   console.log("  原始响应已保存:", file, "（离线检查: node test/diagnose-node.js --inspect <文件>）");
 }
 
@@ -249,12 +252,12 @@ async function main() {
     const ms = r.ms;
     if (!r.ok) {
       console.log("  结果: 失败，本次耗时", ms, "ms，", r.err ? ("错误: " + r.err) : ("HTTP " + r.status));
-      if (r.raw) saveRawResponse({ status: r.status, ms, raw: r.raw, model, thinkingDisabled: noThink });
+      if (r.raw) saveRawResponse({ status: r.status, ms, raw: r.raw, model, thinkingDisableRequested: noThink });
       if (r.err === "timeout") {
         console.log("  超时参考: 90 秒上限内仍超时。不能据此认定改参数即可解决；可能涉及模型生成慢或网关排队，需进一步排查。");
       }
     } else {
-      saveRawResponse({ status: r.status, ms, raw: r.raw, model, thinkingDisabled: noThink });
+      saveRawResponse({ status: r.status, ms, raw: r.raw, model, thinkingDisableRequested: noThink });
       let j = null;
       try { j = JSON.parse(r.raw); } catch { /* 非 JSON */ }
       const msg = j && j.choices && j.choices[0] && j.choices[0].message;
