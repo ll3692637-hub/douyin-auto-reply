@@ -1,30 +1,36 @@
 #!/usr/bin/env node
 /**
- * Node 侧 API 诊断（Mac 本地运行）：
- *   cd <项目>/listener && node test/diagnose-node.js [sessionId]
+ * Node 侧 API 诊断（Mac 本地运行，在 listener 目录）：
+ *   node test/diagnose-node.js <sessionId> <startMs> <endMs>
  *
- * 做了什么（每步最多请求一次，不自动重试）：
- *  [1] 用业务原函数 callDeepSeek 发最小测试（"回复 OK"），90 秒上限
- *  [2] 用与 callDeepSeek 完全相同的请求体做一次原始请求，只检查响应里
- *      是否含 reasoning_content（思考字段）——核实是否为非思考输出
- *  [3] 取最新（或指定）会话的真实 2 分钟证据，用业务原函数 buildPrompt
- *      构造真实复盘请求：统计输入字符数，说明输出上限，再用 callDeepSeek
- *      实发一次（90 秒上限），记录耗时与 token 用量，并做结构校验
+ * 做了什么（每步最多请求一次，不自动重试；不改任何业务代码）：
+ *  [1] 用业务原函数 callDeepSeek 发最小测试。callDeepSeek 固定带
+ *      response_format=json_object，所以 prompt 本身就要求只返回 JSON，
+ *      避免"回复 OK"与强制 JSON 冲突而干扰诊断。
+ *  [2] 用与 callDeepSeek 完全相同的请求体做一次原始请求，检查响应里
+ *      是否出现 reasoning_content / reasoning_tokens。
+ *      注意：未观察到 ≠ 模型一定没思考（网关可能不透传），结论只写"未观察到"。
+ *  [3] 真实复盘请求检查：必须显式指定 sessionId 与毫秒范围（相对场次开始）。
+ *      先展示证据条数与字符数，并保留业务的长度上限（MAX_EVIDENCE_CHARS）；
+ *      经终端确认（输入 y）后才发送，一次真实调用，90 秒上限。
  *
  * 日志铁律：绝不输出密钥和直播原文，只输出计数、耗时、状态、错误码。
- * 成本：共 3 次小额/真实请求（[3] 为一次真实 2 分钟分析调用）。
+ * 超时口径：单次耗时只是样本，不能证明 30 秒长期够用或不够用；
+ * 90 秒仍超时也不等于"改成 90 秒就解决"，需另行排查。
  */
 "use strict";
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const https = require("https");
+const readline = require("readline");
 
 const APP_SUPPORT = path.join(os.homedir(), "Library", "Application Support", "LiveRoomListener");
 const SECRETS = path.join(APP_SUPPORT, "analysis-secrets.json");
 const SESSIONS_DIR = path.join(APP_SUPPORT, "sessions");
 const Analysis = require(path.join(__dirname, "..", "analysis.js"));
 const DIAG_TIMEOUT_MS = 90000;
+const JSON_TEST_PROMPT = "只返回 JSON，不要其他文字：{\"ok\":true}";
 
 function loadSecrets() {
   const s = JSON.parse(fs.readFileSync(SECRETS, "utf8"));
@@ -33,7 +39,14 @@ function loadSecrets() {
   return { apiBase: String(s.apiBase), apiKey: String(s.apiKey), model: String(s.model) };
 }
 
-// 与 callDeepSeek 完全相同的请求体，用于检查原始响应结构（含思考字段）
+function ask(question) {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(question, (a) => { rl.close(); resolve(a); });
+  });
+}
+
+// 与 callDeepSeek 完全相同的请求体，用于检查原始响应结构
 function rawChatOnce({ apiBase, apiKey, model, prompt, timeoutMs }) {
   return new Promise((resolve) => {
     const url = new URL(apiBase.replace(/\/$/, "") + "/chat/completions");
@@ -58,79 +71,93 @@ function rawChatOnce({ apiBase, apiKey, model, prompt, timeoutMs }) {
       res.on("end", () => resolve({ ok: res.statusCode === 200, status: res.statusCode, ms: Date.now() - t0, raw }));
     });
     req.on("timeout", () => { req.destroy(); resolve({ ok: false, status: null, ms: Date.now() - t0, err: "timeout" }); });
-    req.on("error", (e) => resolve({ ok: false, status: null, ms: Date.now() - t0, err: "request_error" }));
+    req.on("error", () => resolve({ ok: false, status: null, ms: Date.now() - t0, err: "request_error" }));
     req.write(body);
     req.end();
   });
-}
-
-function findLatestSession() {
-  if (!fs.existsSync(SESSIONS_DIR)) return null;
-  const cands = fs.readdirSync(SESSIONS_DIR)
-    .map(name => path.join(SESSIONS_DIR, name))
-    .filter(d => { try { return fs.statSync(d).isDirectory() && fs.existsSync(path.join(d, "transcript.jsonl")); } catch { return false; } });
-  if (!cands.length) return null;
-  cands.sort((a, b) => fs.statSync(path.join(b, "transcript.jsonl")).mtimeMs - fs.statSync(path.join(a, "transcript.jsonl")).mtimeMs);
-  return cands[0];
 }
 
 async function main() {
   const { apiBase, apiKey, model } = loadSecrets();
   console.log("apiBase:", apiBase);
   console.log("model:", model);
-  console.log("注：callDeepSeek 默认 30 秒超时；本诊断统一用 90 秒上限测真实耗时，再决定是否调整。");
+  console.log("注：callDeepSeek 业务默认超时 30 秒；本诊断用 90 秒上限测真实耗时（单次样本，仅供决策参考）。");
 
-  // [1] 最小测试：业务原函数
-  console.log("\n[1] callDeepSeek 最小测试（prompt=回复 OK）");
+  // [1] 最小测试：业务原函数 + 与 JSON 模式匹配的 prompt
+  console.log("\n[1] callDeepSeek 最小测试（prompt 要求只返回 JSON，与 response_format 匹配）");
   {
     const t0 = Date.now();
     try {
       const { content, usage } = await Analysis.callDeepSeek({
-        apiBase, apiKey, model, prompt: "回复 OK", timeoutMs: DIAG_TIMEOUT_MS,
+        apiBase, apiKey, model, prompt: JSON_TEST_PROMPT, timeoutMs: DIAG_TIMEOUT_MS,
       });
       console.log("  结果: 成功，耗时", Date.now() - t0, "ms");
       console.log("  content 长度:", (content || "").length, "字符");
+      let isJson = false;
+      try { JSON.parse(content); isJson = true; } catch { /* 非 JSON */ }
+      console.log("  content 是否为合法 JSON:", isJson ? "是" : "否");
       console.log("  usage:", JSON.stringify({ p: usage.prompt_tokens || 0, c: usage.completion_tokens || 0 }));
     } catch (e) {
       console.log("  结果: 失败，耗时", Date.now() - t0, "ms，错误:", e.message);
     }
   }
 
-  // [2] 思考字段检查：原始响应里有没有 reasoning_content
-  console.log("\n[2] 非思考输出核实（原始响应结构检查）");
+  // [2] 思考迹象检查：只报告"观察到/未观察到"，不下断言
+  console.log("\n[2] 思考迹象检查（原始响应结构）");
   {
-    const r = await rawChatOnce({ apiBase, apiKey, model, prompt: "回复 OK", timeoutMs: DIAG_TIMEOUT_MS });
+    const r = await rawChatOnce({ apiBase, apiKey, model, prompt: JSON_TEST_PROMPT, timeoutMs: DIAG_TIMEOUT_MS });
     if (!r.ok) {
       console.log("  请求失败:", r.err || ("HTTP " + r.status), "耗时", r.ms, "ms");
     } else {
-      let msg = null;
-      try { msg = JSON.parse(r.raw).choices[0].message; } catch { /* 解析失败 */ }
+      let j = null;
+      try { j = JSON.parse(r.raw); } catch { /* 解析失败 */ }
+      const msg = j && j.choices && j.choices[0] && j.choices[0].message;
       if (!msg) {
         console.log("  响应解析失败，耗时", r.ms, "ms");
       } else {
-        const hasReasoning = msg.reasoning_content != null && String(msg.reasoning_content).length > 0;
+        const rc = msg.reasoning_content;
+        const rt = j.usage && j.usage.completion_tokens_details &&
+          j.usage.completion_tokens_details.reasoning_tokens;
         console.log("  HTTP 200，耗时", r.ms, "ms");
-        console.log("  reasoning_content:", hasReasoning ? ("存在（" + String(msg.reasoning_content).length + " 字符）→ 模型在思考，需配置非思考参数") : "无 → 当前即为非思考输出，无需额外参数");
+        if (rc != null && String(rc).length > 0) {
+          console.log("  观察到 reasoning_content（" + String(rc).length + " 字符）→ 模型有思考输出，需研究非思考参数配置。");
+        } else if (typeof rt === "number" && rt > 0) {
+          console.log("  观察到 reasoning_tokens=" + rt + " → 模型有思考消耗，需研究非思考参数配置。");
+        } else {
+          console.log("  未观察到 reasoning_content / reasoning_tokens。注意：网关可能不透传思考字段，不能据此断定模型未思考；如需确认，结合响应延迟与平台文档再判断。");
+        }
         console.log("  content 长度:", String(msg.content || "").length, "字符");
       }
     }
   }
 
-  // [3] 真实复盘请求：输入字符数 / 输出上限 / 耗时
-  console.log("\n[3] 真实 2 分钟复盘请求检查");
-  const sessionIdArg = process.argv[2];
-  const sessionDir = sessionIdArg ? path.join(SESSIONS_DIR, sessionIdArg) : findLatestSession();
-  if (!sessionDir || !fs.existsSync(path.join(sessionDir, "transcript.jsonl"))) {
-    console.log("  无可用会话（需要至少一场有转写的监听），跳过本步。");
+  // [3] 真实复盘请求：必须显式指定场次与范围，展示条数后确认才发送
+  console.log("\n[3] 真实复盘请求检查（需显式参数）");
+  const sessionId = process.argv[2];
+  const rangeStartMs = Number(process.argv[3]);
+  const rangeEndMs = Number(process.argv[4]);
+  if (!sessionId || !Number.isFinite(rangeStartMs) || !Number.isFinite(rangeEndMs) || rangeEndMs <= rangeStartMs) {
+    console.log("  未提供有效参数，本步跳过（不发送任何真实数据）。");
+    console.log("  用法: node test/diagnose-node.js <sessionId> <startMs> <endMs>（毫秒，相对场次开始）");
     return;
   }
-  console.log("  会话:", path.basename(sessionDir));
-  const firstLine = fs.readFileSync(path.join(sessionDir, "transcript.jsonl"), "utf8").split("\n").find(l => l.trim());
-  const rangeStartMs = firstLine ? (JSON.parse(firstLine).offsetMs || 0) : 0;
-  const rangeEndMs = rangeStartMs + 120000;
-  const { evidence, evidenceHash, totalChars } = Analysis.collectEvidence(sessionDir, rangeStartMs, rangeEndMs);
+  const sessionDir = path.join(SESSIONS_DIR, sessionId);
+  if (!fs.existsSync(path.join(sessionDir, "transcript.jsonl"))) {
+    console.log("  找不到该场次的 transcript.jsonl，本步跳过。");
+    return;
+  }
+  const { evidence, totalChars } = Analysis.collectEvidence(sessionDir, rangeStartMs, rangeEndMs);
+  console.log("  场次:", sessionId, "；范围:", evidence.range.label);
+  console.log("  证据条数: 转写", evidence.transcripts.length, "、弹幕", evidence.danmaku.length,
+    "、商品", evidence.products.length, "、在线采样", evidence.online.length);
+  console.log("  证据字符数:", totalChars);
   if (!Analysis.hasAnalyzable(evidence)) {
-    console.log("  该范围无可分析内容，跳过本步。");
+    console.log("  该范围无可分析内容，本步结束（未发送）。");
+    return;
+  }
+  // 保留业务的证据长度限制（与 analyzeRange 的 TOO_LARGE 同口径）
+  if (totalChars > Analysis.MAX_EVIDENCE_CHARS) {
+    console.log("  证据超过业务上限 " + Analysis.MAX_EVIDENCE_CHARS + " 字符，按业务规则应缩小范围，本步结束（未发送）。");
     return;
   }
   const root = path.join(__dirname, "..");
@@ -138,9 +165,13 @@ async function main() {
     evidence,
     fs.readFileSync(path.join(root, "analysis-rules-base-v1.md"), "utf8"),
     fs.readFileSync(path.join(root, "analysis-rules-scarf-v1.md"), "utf8"));
-  console.log("  证据字符数:", totalChars, "；完整 prompt 输入字符数:", prompt.length);
+  console.log("  完整 prompt 输入字符数:", prompt.length);
   console.log("  输出上限: 代码未设置 max_tokens，输出上限为模型默认；实测以 usage.completion_tokens 为准。");
-  console.log("  正在发送真实分析请求（90 秒上限，一次性，不重试）…");
+  const ans = await ask("  以上范围将发送给模型做一次真实分析（付费，一次，不重试）。确认发送请输入 y 后回车：");
+  if (String(ans).trim().toLowerCase() !== "y") {
+    console.log("  已取消，未发送。");
+    return;
+  }
   {
     const t0 = Date.now();
     try {
@@ -148,9 +179,9 @@ async function main() {
         apiBase, apiKey, model, prompt, timeoutMs: DIAG_TIMEOUT_MS,
       });
       const ms = Date.now() - t0;
-      const p = usage.prompt_tokens || 0, c = usage.completion_tokens || 0;
-      console.log("  结果: 成功，耗时", ms, "ms；usage prompt/completion:", p + "/" + c);
-      let verdict = "";
+      console.log("  结果: 成功，本次耗时", ms, "ms；usage prompt/completion:",
+        (usage.prompt_tokens || 0) + "/" + (usage.completion_tokens || 0));
+      let verdict;
       try {
         const parsed = JSON.parse(content);
         const v = Analysis.validateModelOutput(parsed, Analysis.buildEvidenceByRef(evidence));
@@ -159,13 +190,14 @@ async function main() {
         verdict = "返回不是合法 JSON";
       }
       console.log("  输出校验:", verdict);
-      console.log("  超时结论:", ms <= 25000
-        ? "耗时 < 30s，现 30 秒超时够用，无需调整。"
-        : "耗时超过/接近 30s，建议将 MODEL_TIMEOUT_MS 从 30000 改为 90000。");
+      console.log("  超时参考: 本次", ms, "ms。单次样本不能证明 30 秒长期够用或不够用；",
+        ms > 30000 ? "本次已超过 30 秒，说明现超时对这类请求至少偶发不足，可考虑放宽到 90 秒再观察。" : "本次在 30 秒内，但样本不足以下结论，建议多测几场再决定。");
     } catch (e) {
       const ms = Date.now() - t0;
-      console.log("  结果: 失败，耗时", ms, "ms，错误:", e.message);
-      if (/超时/.test(e.message)) console.log("  超时结论: 30 秒不够，建议将 MODEL_TIMEOUT_MS 改为 90000。");
+      console.log("  结果: 失败，本次耗时", ms, "ms，错误:", e.message);
+      if (/超时/.test(e.message)) {
+        console.log("  超时参考: 90 秒上限内仍超时。不能据此认定改参数即可解决；可能涉及模型生成慢或网关排队，需进一步排查。");
+      }
     }
   }
 }
