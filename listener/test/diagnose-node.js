@@ -234,7 +234,7 @@ async function main() {
   const prompt = Analysis.buildPrompt(
     evidence,
     fs.readFileSync(path.join(root, "analysis-rules-base-v1.md"), "utf8"),
-    fs.readFileSync(path.join(root, "analysis-rules-scarf-v1.md"), "utf8"));
+    fs.readFileSync(path.join(root, "analysis-rules-scarf-v2.md"), "utf8"));
   console.log("  完整 prompt 输入字符数:", prompt.length);
   console.log("  输出上限: 代码未设置 max_tokens，输出上限为模型默认；实测以 usage.completion_tokens 为准。");
   const ans = await ask("  以上范围将发送给模型做一次真实分析（付费，一次，不重试）。确认发送请输入 y 后回车：");

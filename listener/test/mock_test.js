@@ -974,7 +974,7 @@ async function testAI002() {
     sessionDir: aiDir2, sessionId: aiSess2,
     rangeStartMs: 0, rangeEndMs: 60000, evidenceHash: hash2,
     secrets: null, rulesBasePath: path.join(root, "analysis-rules-base-v1.md"),
-      rulesScarfPath: path.join(root, "analysis-rules-scarf-v1.md"), mockMode: true,
+      rulesScarfPath: path.join(root, "analysis-rules-scarf-v2.md"), mockMode: true,
   });
   fs.rmSync(aiDir2, { recursive: true, force: true }); // 并发删除
   let goneErr = null;
@@ -996,7 +996,7 @@ async function testAI002() {
       sessionDir: aiDir, sessionId: aiSess,
       rangeStartMs: 100000, rangeEndMs: 180000, evidenceHash: fresh.evidenceHash,
       secrets: null, rulesBasePath: path.join(root, "analysis-rules-base-v1.md"),
-      rulesScarfPath: path.join(root, "analysis-rules-scarf-v1.md"), mockMode: false,
+      rulesScarfPath: path.join(root, "analysis-rules-scarf-v2.md"), mockMode: false,
     });
   } catch (e) { noKeyErr = e; }
   assert.ok(noKeyErr && noKeyErr.code === "NO_API_KEY");
@@ -1029,7 +1029,7 @@ async function testAI002() {
   // 双规则 hash 计入缓存键：改任一文件都不误命中
   const h1 = Analysis.ruleContentHash([
     path.join(root, "analysis-rules-base-v1.md"),
-    path.join(root, "analysis-rules-scarf-v1.md"),
+    path.join(root, "analysis-rules-scarf-v2.md"),
   ]);
   const h2 = Analysis.ruleContentHash([path.join(root, "analysis-rules-base-v1.md")]);
   assert.notEqual(h1, h2);
@@ -1058,13 +1058,13 @@ async function testAI002() {
       sessionDir: aiDir3, sessionId: aiSess3, rangeStartMs: 0, rangeEndMs: 60000,
       evidenceHash: hash3, secrets: null,
       rulesBasePath: path.join(root, "analysis-rules-base-v1.md"),
-      rulesScarfPath: path.join(root, "analysis-rules-scarf-v1.md"), mockMode: true,
+      rulesScarfPath: path.join(root, "analysis-rules-scarf-v2.md"), mockMode: true,
     }),
     Analysis.analyzeRange({
       sessionDir: aiDir4, sessionId: aiSess4, rangeStartMs: 0, rangeEndMs: 60000,
       evidenceHash: hash4, secrets: null,
       rulesBasePath: path.join(root, "analysis-rules-base-v1.md"),
-      rulesScarfPath: path.join(root, "analysis-rules-scarf-v1.md"), mockMode: true,
+      rulesScarfPath: path.join(root, "analysis-rules-scarf-v2.md"), mockMode: true,
     }),
   ]);
   assert.equal(r3.sessionId, aiSess3);
